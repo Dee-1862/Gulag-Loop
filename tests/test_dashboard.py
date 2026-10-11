@@ -111,6 +111,34 @@ class DashboardTests(TestCase):
         self.assertEqual(data['records']['calls'][0]['error_type'],'ValueError')
         self.assertNotIn('do-not-return',json.dumps(data))
 
+    def test_proposal_comparison_keeps_parent_outside_visible_records(self):
+        child = dict(_id='child', persona='Bold', generation=2, parent_ids=['parent'],
+                     params={'aim_gain': .72}, changed_params=['aim_gain'], rationale='Reduce overshoot')
+        books = [child] + [dict(_id=f'other-{i}') for i in range(55)] + [
+            dict(_id='parent', params={'aim_gain': .8, 'api_key': 'do-not-return'})]
+        data = self.snapshot(books=books)
+        self.assertEqual(data['agents'][0]['proposal']['parent_params'], {'aim_gain': .8})
+        self.assertEqual(data['records']['strategies'][0]['parent_params'], {'aim_gain': .8})
+        self.assertNotIn('do-not-return', json.dumps(data))
+        child['parent_ids'] = ['missing', 'parent']
+        self.assertIsNone(self.snapshot(books=books)['agents'][0]['proposal']['parent_params'])
+
+    def test_console_tail_is_bounded_and_redacts_credentials(self):
+        from dashboard.control import console_tail
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'worker.log'
+            path.write_text('old line\n' * 10000 + '[12:01] stored in MongoDB\n'
+                            'mongodb+srv://user:secret@host/db api_key=secret Bearer abc123 sk-example\n')
+            lines = console_tail(path)
+            self.assertLessEqual(len(lines), 48)
+            self.assertIn('[12:01] stored in MongoDB', lines)
+            self.assertNotIn('secret', '\n'.join(lines))
+            self.assertNotIn('abc123', '\n'.join(lines))
+            self.assertNotIn('sk-example', '\n'.join(lines))
+            self.assertEqual(console_tail(Path(folder) / 'missing'), [])
+
     def test_demo_is_explicit_and_no_credentials_means_disconnected(self):
         demo=DemoSource().snapshot('demo')
         self.assertEqual(demo['mode'],'demo')
@@ -119,10 +147,9 @@ class DashboardTests(TestCase):
         self.assertEqual(set(personas['Explorer']['changed_params']),{'target_rule','strafe_mode'})
         with patch('dashboard.server.configuration',return_value={}):
             backend=Backend()
-            data=backend.snapshot('x',False)
+            data=backend.snapshot('x')
             self.assertFalse(data['connected'])
             self.assertEqual(data['mode'],'live')
-            self.assertEqual(backend.snapshot('x',True)['mode'],'demo')
 
     def test_dotenv_quotes_comments_and_environment_override(self):
         import os
@@ -161,13 +188,42 @@ class DashboardTests(TestCase):
     def test_invalid_timestamp_is_not_fresh(self):
         self.assertIsNone(age('bad timestamp',self.now))
 
-    def test_empty_experiment_checks_connection(self):
+    def test_empty_experiment_loads_unified_history(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
         with patch('dashboard.server.configuration', return_value={}):
             backend=Backend()
-        command=Mock(side_effect=RuntimeError('offline'))
-        backend.live=SimpleNamespace(db=SimpleNamespace(command=command))
-        with self.assertRaises(RuntimeError):
-            backend.snapshot('',False)
-        command.assert_called_once_with('ping')
+        backend.live=SimpleNamespace(snapshot=Mock(return_value={'scope':'all'}))
+        self.assertEqual(backend.snapshot(''), {'scope':'all'})
+        backend.live.snapshot.assert_called_once_with('')
+
+    def test_combined_history_keeps_parent_scores_and_agent_recency_in_their_experiments(self):
+        from dashboard.data import assemble_history
+        experiments=[{'_id':'old'},{'_id':'new'}]
+        before=self.now-timedelta(days=1)
+        books=[dict(_id='parent',experiment_id='old',params={'aim_gain':.9},created_at=before),
+               dict(_id='child',experiment_id='old',persona='Bold',generation=99,parent_ids=['parent'],params={'aim_gain':.8},created_at=before),
+               dict(_id='parent',experiment_id='new',params={'aim_gain':.7},created_at=self.now),
+               dict(_id='child',experiment_id='new',persona='Bold',generation=1,parent_ids=['parent'],params={'aim_gain':.6},created_at=self.now)]
+        runs=[dict(_id='new-run',experiment_id='new',strategy_id='child',fitness=20,completed_at=self.now),
+              dict(_id='old-run',experiment_id='old',strategy_id='child',fitness=999,completed_at=before)]
+        data=assemble_history(experiments,[],runs,[],books,[],{'runs':2},self.now)
+        self.assertEqual(data['experiment_count'],2)
+        self.assertEqual([r['_id'] for r in data['records']['runs']],['new-run','old-run'])
+        agent=data['agents'][0]
+        self.assertEqual(agent['experiment_id'],'new')
+        self.assertEqual(agent['proposal']['parent_params'],{'aim_gain':.7})
+        self.assertEqual(agent['proposal']['mean_fitness'],20)
+        self.assertEqual(agent['proposal']['evaluations'],1)
+        self.assertEqual(data['events'][0]['experiment_id'],'new')
+
+    def test_removed_demo_api_cannot_return_synthetic_records(self):
+        from dashboard.server import handler_for
+        from unittest.mock import Mock
+        backend=Mock()
+        handler=handler_for(backend).__new__(handler_for(backend))
+        handler.path='/api/snapshot?mode=demo'
+        handler.send=Mock()
+        handler.do_GET()
+        self.assertEqual(handler.send.call_args.kwargs['status'],400)
+        backend.snapshot.assert_not_called()

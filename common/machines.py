@@ -92,10 +92,30 @@ def champion(map_name="kino"):
             "measured": {"mean_fitness": round(stats["mean"], 1), "runs": stats["n"]} if stats else None}
 
 
+def best_strategy(min_games=2):
+    """Highest mean-fitness strategy across all experiments (at least `min_games` games), or None."""
+    db = get_db()
+    rows = list(db[RUNS].aggregate([
+        {"$match": {"experiment_id": {"$not": {"$regex": "^(test|selftest)"}}}},
+        {"$group": {"_id": "$strategy_id", "games": {"$sum": 1}, "fit": {"$avg": "$fitness"},
+                    "exp": {"$first": "$experiment_id"}}},
+        {"$match": {"games": {"$gte": min_games}}},
+        {"$sort": {"fit": -1}}, {"$limit": 5},
+        {"$lookup": {"from": PLAYBOOKS, "localField": "_id", "foreignField": "_id", "as": "pb"}},
+        {"$match": {"pb.0.params": {"$exists": True}}}, {"$limit": 1}]))
+    if not rows:
+        return None
+    r, pb = rows[0], rows[0]["pb"][0]
+    return {"name": "team-best", "params": pb["params"], "persona": pb.get("persona"),
+            "source": f"{r['exp']} {pb.get('persona') or r['_id']} (mean fitness {r['fit']:.0f} over {r['games']} games)"}
+
+
 def get_strategy(name, map_name="kino"):
     """Params and metadata for a named strategy; 'champion' = best evolved in MongoDB. None if unknown."""
     if name == "champion":
         return champion(map_name)
+    if name == "team-best":
+        return best_strategy()
     db = get_db()
     row = db[STRATEGIES].find_one({"_id": name})
     seen = set()

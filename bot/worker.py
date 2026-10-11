@@ -19,7 +19,7 @@ import time
 
 import cv2
 import numpy as np
-from bot.controller import BASELINE, run_episode
+from bot.controller import BASELINE, InvalidEpisode, run_episode
 from bot.game import PortGame
 from bot.paths import p as _p
 
@@ -342,7 +342,7 @@ def run_mongo(args):
                 "survival_s": r["survival_s"], "fitness": r["points"] + 5 * r["survival_s"],
                 "kills": r["diagnostics"].get("kills_est"), "worker": args.worker}
         try:
-            if uploader.upload_footage(job["job_id"], path, meta=meta):
+            if uploader.upload_footage(job["job_id"], path, meta=meta, max_w=960):  # ~1 MB, close to live quality
                 log(f"  video uploaded to MongoDB (generation {meta['generation']})")
         except Exception as e:
             log(f"  video upload failed ({type(e).__name__})")
@@ -350,10 +350,26 @@ def run_mongo(args):
     runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
                     weights=args.weights, db=orch.db, experiment_id=args.experiment, live_view=args.live_view,
                     slot=args.slot, input_mode="js" if args.slot is not None else "os")
+    invalid_streak = 0
     try:
         for i, job in enumerate(job_stream()):
             log(f"job {i + 1} {job['kind']} {job['strategy_id'][:8]} (MongoDB {args.experiment})")
-            r = runner.run(job)
+            try:
+                r = runner.run(job)
+            except InvalidEpisode as exc:
+                if not orch.release_job(job["job_id"], args.worker):
+                    raise RuntimeError("could not requeue invalid episode; worker no longer owns the job") from exc
+                invalid_streak += 1
+                log(f"game invalid ({exc}); not scored, job requeued ({invalid_streak}/3)")
+                if invalid_streak >= 3:
+                    raise RuntimeError("three consecutive invalid episodes; job queued, fix game control before restarting") from exc
+                time.sleep(max(0.1, args.wait_s))
+                continue
+            except (Exception, KeyboardInterrupt):
+                # Unexpected failures stop the worker, but leave the claimed job available for another attempt.
+                orch.release_job(job["job_id"], args.worker)
+                raise
+            invalid_streak = 0
             if r is None:
                 orch.release_job(job["job_id"], args.worker)  # F8: back in the queue
                 break

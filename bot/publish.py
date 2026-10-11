@@ -72,6 +72,7 @@ class Publisher:
         self.worker = socket.gethostname()
         self._last_beat = 0.0
         self._started = time.time()
+        self.memory = None  # optional bot.agent_memory.AgentMemory: heartbeats -> hud_states time series
         self.db.experiments.update_one({"_id": self.exp}, {"$setOnInsert": {
             "design": "bot", "map": map_id, "generation": 0, "started_at": _now(),
             "notes": notes or "browser-port bot (bot/loop.py), published by bot/publish.py"}}, upsert=True)
@@ -103,6 +104,7 @@ class Publisher:
                 "rationale": c.get("rationale"), "parent_ids": [self.sid(x) for x in c.get("parent_ids", [])],
                 "changed_params": c.get("changed_params", []), "fallback": c.get("fallback", False),
                 "fallback_source": c.get("fallback_source"), "params": c.get("params"),
+                "memory_context": c.get("memory_context"),
                 "is_best": self.sid(c["_id"]) == best}, "$setOnInsert": {"created_at": _dt(c.get("created_at")) or now}},
                 upsert=True))
         job_ops = []
@@ -156,6 +158,8 @@ class Publisher:
                                                  "identity": self.identity}, {"$set": doc}, upsert=True)
         except Exception:
             pass  # the game must never stall on the dashboard
+        if self.memory is not None:
+            self.memory.hud_point(job_id, fps, detections, action, points, elapsed_s)
 
     def idle(self):
         try:
