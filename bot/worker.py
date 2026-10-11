@@ -86,7 +86,8 @@ class Runner:
         self.game = PortGame(map_id, log=log).open()
         log("gpu:", self.game.gpu())
         self.game.start()
-        self.game.align()
+        # Geometric viewport estimate on purpose: template alignment succeeds only sometimes, and a
+        # session-dependent 25 px offset would make episodes incomparable and move the HUD OCR crops.
         self._Capture = Capture
         self.cap = Capture(self.game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
         log(f"capture backend: {self.cap.backend} region {self.game.canvas_region()}, counts_per_px={self.cpp}")
@@ -98,10 +99,6 @@ class Runner:
         """Play one episode for a job. Returns a result dict in the ingest format, or None if aborted (F8)."""
         if not self.fresh:
             self.game.start()  # reload = fresh game; assets come from cache
-            old = self.game.canvas_region()
-            if self.game.align() != old:  # window moved: rebuild the capture
-                self.cap.close()
-                self.cap = self._Capture(self.game.canvas_region(), 60)
         self.fresh = False
         self.vp.tracker.__init__()  # fresh track ids per episode
         self.hud.points_hist.clear()
