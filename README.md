@@ -65,3 +65,31 @@ transient request errors twice. Logs exclude credentials and raw error bodies.
 
 This module does not run games, rank champions, or write to MongoDB. Those belong
 to the orchestrator. Sample diagnostics are synthetic, not evidence of improvement.
+
+## JSON handoff runner (one or two ranked parents)
+
+Validate sample inputs without credentials or network requests:
+
+```sh
+.venv/bin/python generate_strategies.py --input examples/generation_input.json --dry-run
+```
+
+Generate four real proposals and export the handoff:
+
+```sh
+.venv/bin/python generate_strategies.py --input examples/generation_input.json --output outputs/generation-2.json
+```
+
+The example contains synthetic data. Replace it with actual run summaries to evaluate
+real behavior. Each parent supplies `strategy_id`, `params`, `diagnostics`,
+`mean_fitness`, and `evaluation_count`. Parents are already ranked, champion first;
+the runner does not calculate rankings. `generation` and optional `history` are shared.
+With two parents, Tuner and Defender modify the champion; Bold and Explorer modify
+the runner-up. All personas see both parents as comparison context. With one parent,
+all four use it. `parent_ids` records the actual mutation parent, not both references.
+
+For Python integration use `generation.generate_generation(client, input_document)`.
+Output has the same `strategies` and `llm_calls` batch structure as `generate_batch`.
+Calls are linked to children by `strategy_id`; UTC timestamps and per-attempt prompt
+hashes support audit logging. The CLI refuses to overwrite existing output files.
+The `outputs/` directory is ignored by Git so run artifacts stay local by default.
