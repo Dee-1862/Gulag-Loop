@@ -111,6 +111,34 @@ class DashboardTests(TestCase):
         self.assertEqual(data['records']['calls'][0]['error_type'],'ValueError')
         self.assertNotIn('do-not-return',json.dumps(data))
 
+    def test_proposal_comparison_keeps_parent_outside_visible_records(self):
+        child = dict(_id='child', persona='Bold', generation=2, parent_ids=['parent'],
+                     params={'aim_gain': .72}, changed_params=['aim_gain'], rationale='Reduce overshoot')
+        books = [child] + [dict(_id=f'other-{i}') for i in range(55)] + [
+            dict(_id='parent', params={'aim_gain': .8, 'api_key': 'do-not-return'})]
+        data = self.snapshot(books=books)
+        self.assertEqual(data['agents'][0]['proposal']['parent_params'], {'aim_gain': .8})
+        self.assertEqual(data['records']['strategies'][0]['parent_params'], {'aim_gain': .8})
+        self.assertNotIn('do-not-return', json.dumps(data))
+        child['parent_ids'] = ['missing', 'parent']
+        self.assertIsNone(self.snapshot(books=books)['agents'][0]['proposal']['parent_params'])
+
+    def test_console_tail_is_bounded_and_redacts_credentials(self):
+        from dashboard.control import console_tail
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'worker.log'
+            path.write_text('old line\n' * 10000 + '[12:01] stored in MongoDB\n'
+                            'mongodb+srv://user:secret@host/db api_key=secret Bearer abc123 sk-example\n')
+            lines = console_tail(path)
+            self.assertLessEqual(len(lines), 48)
+            self.assertIn('[12:01] stored in MongoDB', lines)
+            self.assertNotIn('secret', '\n'.join(lines))
+            self.assertNotIn('abc123', '\n'.join(lines))
+            self.assertNotIn('sk-example', '\n'.join(lines))
+            self.assertEqual(console_tail(Path(folder) / 'missing'), [])
+
     def test_demo_is_explicit_and_no_credentials_means_disconnected(self):
         demo=DemoSource().snapshot('demo')
         self.assertEqual(demo['mode'],'demo')

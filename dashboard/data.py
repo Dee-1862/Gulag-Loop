@@ -118,9 +118,20 @@ def assemble(experiment, jobs, runs, calls, playbooks, signals, counts, now=None
     latest = runs[0] if runs else {}
     records = dict(runs=record_rows('runs', runs, 25), jobs=record_rows('jobs', jobs, 50),
                    strategies=record_rows('strategies', playbooks, 50), calls=record_rows('calls', calls, 20))
-    for strategy in records['strategies']:
+    # Keep each persona's latest saved proposal and its actual parent together, even
+    # when the parent falls outside the 50-row records window. No invented values.
+    def enrich(strategy):
+        parent = pb.get(str((strategy.get('parent_ids') or [None])[0]))
+        strategy['parent_params'] = {k: parent['params'][k] for k in PARAM_FIELDS
+                                     if parent and k in (parent.get('params') or {})} if parent else None
         scores = groups.get(strategy['_id'], [])
         strategy.update(evaluations=len(scores), mean_fitness=round(mean(scores), 1) if scores else None)
+        return strategy
+    for strategy in records['strategies']:
+        enrich(strategy)
+    for agent in agents:
+        proposal = next((p for p in playbooks if p.get('persona') == agent['persona']), None)
+        agent['proposal'] = enrich(record_rows('strategies', [proposal], 1)[0]) if proposal else None
     return clean(dict(mode='live', connected=True, experiment=dict(id=str(experiment['_id']), map=experiment.get('map', '—'),
         generation=experiment.get('generation', 0), started_at=iso(experiment.get('started_at'))), updated_at=now.isoformat(), jobs=dict(statuses), counts=counts, records=records,
         workers=workers, agents=agents, chart=chart, leaderboard=leaderboard[:6], events=events[:25],

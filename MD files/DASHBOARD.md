@@ -1,7 +1,7 @@
 # Backend dashboard
 
 The dashboard shows the real-game evolution loop: vision/controller → MongoDB →
-four Luminal agents → queued evaluations → vision/controller. It is a local Python
+four Luminal agents → MongoDB → queued evaluations → vision/controller. It is a local Python
 HTTP service and a browser interface; no frontend build or Windows dependencies are
 needed on the dashboard laptop.
 
@@ -15,8 +15,10 @@ From the repository root:
 ```
 
 Open http://127.0.0.1:8765. The default is live mode. Supply `MONGODB_URI` and optional
-`MONGODB_DB` in the private `.env`, then select your experiment. The dashboard only
-reads MongoDB; it cannot start a game, trigger model calls, or modify jobs.
+`MONGODB_DB` in the private `.env`, then select your experiment. The data views read MongoDB. The separate **Game controls** menu can start or stop
+a local worker, which can write results and request Luminal proposals. Use
+`--read-only` (or `DASHBOARD_READ_ONLY=1`) to disable those controls for a display-only
+server. Pausing updates never stops gameplay.
 
 To preview without credentials:
 
@@ -29,56 +31,52 @@ Demo mode never calls Luminal or writes to MongoDB. You can select Demo preview 
 Live backend in the browser. Restart the server after changing `.env`.
 Use `--port 8766` if the default port is already occupied.
 
-## What each panel shows
+## Judge-friendly dashboard
 
-- **MongoDB Records tab:** inspect up to 25 recent saved runs, including points,
-  survival, fitness, worker identity, and diagnostics. Inspect up to 50 recent
-  strategies with all 12 settings, rationales, parent links, and sampled evaluation
-  scores. Filter the latest 50 jobs by status and review the latest 20 Luminal call
-  attempts. Click a completed job to open its run, or a strategy link to inspect
-  its settings. Queue readiness uses full experiment job totals. The Overview also
-  summarizes the latest saved evaluation, even without live worker telemetry.
-  Open directly at http://127.0.0.1:8765/#records.
-- **Data Flow tab:** an interactive map of the game, vision, worker, MongoDB
-  collections, parent selection, four Luminal personas, validation, and job feedback
-  loop. Click a stage or arrow to inspect its inputs and outputs. Observed snapshots
-  and illustrative payloads have separate labels. Use the guided walkthrough,
-  zoom buttons, drag-to-pan, Fit, and Copy JSON. Tab/Enter also select graph items;
-  arrow keys switch dashboard tabs. Open directly at http://127.0.0.1:8765/#flow.
-- **Data flow:** vision worker, MongoDB connection, and Luminal generation status,
-  with the strategy/job feedback path back to the game worker.
-- **Worker viewport:** latest annotated 640×360 game thumbnail, loop FPS, confirmed
-  detections, current action, points gained, and elapsed episode time.
-- **Four agents:** Bold, Tuner, Defender, Explorer; current attempt status plus last
-  saved call latency. Click an agent for its latest persisted rationale and changes.
-- **MongoDB activity:** scoped document counts for jobs, runs, playbooks, and calls.
-- **Learning history:** best and mean *run* fitness grouped by evaluation generation,
-  and the highest mean strategy fitness among the most recent 500 evaluations.
-- **Activity stream:** saved runs, job states, and call attempts. Filter by MongoDB
-  job/run records or Luminal call records. This is polling, not a change-stream audit.
+- **Overview:** worker viewport, four agent cards, and episode recordings. A compact
+  session strip shows the experiment, map, generation, and evaluation count. Game
+  controls are tucked into their own menu. Click an agent for its saved rationale
+  and exact parent → proposed setting changes.
+- **Data flow:** exactly three layers: Vision & game, MongoDB memory, and the four
+  Luminal agents. Four separate two-way arrows connect MongoDB to Bold, Tuner,
+  Defender, and Explorer. A two-way arrow connects vision and MongoDB. Click or
+  keyboard-select a node or connection for current evidence, the proposed changes,
+  relevant console lines, and expandable saved events and implementation details.
+  The arrows describe the implemented paths; highlighting follows your selection,
+  not measured network traffic. The orchestrator performs the database operations.
+  Open http://127.0.0.1:8765/#flow.
+- **MongoDB records:** points, survival, fitness, and key diagnostics for a saved
+  evaluation, alongside a strategy's rationale and changed settings. Expand the
+  full settings, diagnostics, lineage, evaluation queue, or call history only when
+  needed. Select a completed job to inspect its run; strategy links open the saved
+  strategy. Open http://127.0.0.1:8765/#records.
 
-The browser polls about every two seconds; responses are cached briefly. Historical
-queries are bounded to 500 runs/jobs/playbooks and 200 calls, while collection counts
-and job-status totals cover the selected experiment. A completed attempt reflects
-provider/validation success; the rationale appears after the orchestrator commits
-its transaction. Prior saved metadata can remain visible while the next call runs.
-Records are scoped to the selected experiment, use explicit field projections, and
-are read-only. Run and strategy selections persist across polling. Strategy scores
-use the recent run sample; they are not claims of all-time performance. Parent or
-job links outside the returned record window are shown as unavailable. Empty call
-history does not imply the four personas have run. Saved run metrics are displayed
-separately from current worker telemetry, with completion timestamps.
+Agent suggestions are hypotheses, not proof of improvement. Comparisons use the
+first (assigned) parent; missing parents are explicitly unavailable. Each agent's
+latest saved proposal keeps its own generation label even if another call is in
+progress. Fallbacks are labeled. The four personas share the configured model.
 
-The Data Flow tab uses this same snapshot and refresh controls. Its architecture
-stays available without a database connection. Arrows describe implemented code
-paths, not measured network transfers, and highlighting follows your selection.
-Parent selection and validation have no independent heartbeat; they are labeled
-as code paths rather than shown as actively running. Validation is grouped visually
-but happens inside each persona's client call. After failed attempts, the client
-reuses a compatible cached proposal or generates a local mutation of the parent;
-the dashboard identifies these as fallbacks. The storage-to-queue arrow represents
-the orchestrator's transaction, not a MongoDB trigger. For a synthetic preview,
-open http://127.0.0.1:8765/?mode=demo#flow.
+**Project console** displays captured stdout from a local worker launched by this
+running dashboard server, filtered for the selected stage and experiment. It reads
+at most the last 64 KiB / 48 lines, redacts URLs and common credential patterns, and
+displays at most 12 matching lines. The agents show generation-level stdout; their
+individual outcomes are in saved call events. Remote workers, externally launched
+processes, and workers from an earlier server session may have no console capture.
+The UI says so rather than inventing output. Saved MongoDB events are separately
+labeled as records, not stdout. Demo mode never displays actual process logs.
+
+Snapshots refresh approximately every two seconds. Pause freezes snapshot views;
+local process status continues to poll for the game controls. MongoDB queries are
+bounded to 500 runs/jobs/playbooks and 200 calls; full collection counts and queue
+totals cover the selected experiment. Records show up to 25 runs, 50 strategies,
+50 jobs, and 20 call attempts. Parent settings are included when the parent exists
+in the 500-playbook sample, even outside the visible 50-row window. Strategy scores
+use the recent run sample. Selection persists across polling and resets when the
+experiment changes. Recordings clear immediately on source or experiment changes.
+
+For a synthetic preview, open http://127.0.0.1:8765/?mode=demo#flow. Demo data and
+sample frames remain visibly labeled; no gameplay, database writes, or model calls
+are started by demo preview.
 
 **Pause pauses only the dashboard's automatic refresh.** It does not stop the bot,
 Luminal calls, database writes, or work in Codex. Use the worker's F8 abort to stop
@@ -110,8 +108,8 @@ migration is required. The worker/orchestrator database user needs write permiss
 for this collection; the dashboard user only needs read permission.
 
 Writes run on a bounded background queue with a two-second operation timeout. If
-monitoring is unavailable, the game and generator continue. No raw provider errors,
-API keys, or connection strings are exposed by the HTTP API.
+monitoring is unavailable, the game and generator continue. Snapshots exclude raw provider errors, API keys, and connection strings. Local
+console lines use the bounded, redacted capture described above.
 
 A running worker heartbeat older than 12 seconds becomes **stale**; a pending agent
 signal older than 240 seconds becomes **stale**. Missing signals mean waiting, not
@@ -133,6 +131,8 @@ exposed publicly without an authenticated reverse proxy.
 - `GET /api/frame?experiment=ID&mode=live&worker=IDENTITY&job=JOB_ID`: the selected
   running worker's recent JPEG or HTTP 204. Worker identity is required; supplying
   the job ID prevents a newer episode's frame from appearing with older statistics.
+- `GET /api/video?experiment=ID&job=JOB_ID&mode=live`: saved GridFS MP4 playback.
+- `GET /api/control/status`: local process state and bounded console tail, when enabled.
 - `mode=demo` on snapshot requests: explicitly labeled synthetic data.
 
 ```sh
@@ -149,7 +149,9 @@ NODE_PATH=/tmp/zombieloop-dashboard-tests/node_modules node --test tests/dashboa
 ```
 
 These check late responses during source changes and pausing, worker/frame matching,
-missing-image and fallback labels, all graph arrow endpoints, and tab/graph controls.
+missing-image and fallback labels, all five graph arrow endpoints, the three-layer
+structure, exact setting comparisons, console isolation, recording reset, and
+keyboard tab/graph controls.
 
 Tests cover freshness, fallback states, statistics, frame exclusion, demo isolation,
 per-persona monitoring documents, and nonfatal database failures. Browser preview

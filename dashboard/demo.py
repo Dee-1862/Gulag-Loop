@@ -12,7 +12,7 @@ class DemoSource:
         phase = int(time.time()) % 36
         names = ['Bold','Tuner','Defender','Explorer']
         rationales = [
-            'Reduce aim gain and cap each mouse step to address overshoot. Retreat earlier when zombies fill the frame.',
+            'Reduce aim gain to address overshoot. Retreat earlier when zombies fill the frame.',
             'Lower aim gain by 10%. Keep the remaining settings stable to isolate the effect on target lock.',
             'Start retreating sooner and alternate strafing to create space before reloading.',
             'Prioritize the nearest threat and test alternating movement while keeping aim settings fixed.',
@@ -30,7 +30,7 @@ class DemoSource:
         books.append(dict(_id='demo-baseline', persona='Baseline', generation=0, params=baseline,
                           parent_ids=[], rationale='Hand-written starting strategy.', created_at=now-timedelta(hours=1)))
         runs = [dict(_id=f'r{g}', job_id=f'j{g}', strategy_id=f'p{g%4}', generation=g, worker='game-laptop-01', points=180+g*95,
-                     survival_s=90+g*10, fitness=630+g*145, diagnostics={'overshoot_rate':.18,'hit_rate':.72}, completed_at=now-timedelta(seconds=(8-g)*40+12)) for g in range(8,-1,-1)]
+                     survival_s=90+g*10, fitness=630+g*145, diagnostics={'overshoot_rate':.18,'hit_rate':.72,'time_no_target_pct':14.2,'det_count_avg':2.3,'loop_fps':29.6,'shots_fired':145,'hits_proxy':104,'last_5s_summary':'Demo example: several targets approached during a reload. Earlier retreat may create more room.'}, completed_at=now-timedelta(seconds=(8-g)*40+12)) for g in range(8,-1,-1)]
         jobs = [dict(job_id=f'job{i}', kind='child', status='done' if i<3 else 'queued', created_at=now-timedelta(seconds=50+i)) for i in range(5)]
         signals = [dict(component='vision', identity='game-laptop-01', worker='game-laptop-01', state='running' if phase<18 else 'complete', updated_at=now,
                         fps=29.6, detections=3, action='RETREAT' if phase%7<2 else 'ENGAGE', points=940, elapsed_s=102+phase)]
