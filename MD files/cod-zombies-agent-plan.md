@@ -67,7 +67,7 @@ I simulated the loop offline (toy fitness landscape over 5 strategy params, 3-mi
 │        ▲ mouse/keys (pydirectinput-rgx)          │ frames (dxcam, region)  │
 │        │                                         ▼                          │
 │   controller.py  ◄── strategy.json         YOLO11n on GPU (on-device)       │
-│   (30 fps loop: detect → aim → fire → move)                                     │
+│   (30 fps loop: detect → aim → fire → move)                                 │
 │        │ telemetry.jsonl + run summary + OCR score                          │
 └────────┼────────────────────────────────────────────────────────────────────┘
          ▼

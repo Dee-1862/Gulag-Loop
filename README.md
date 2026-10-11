@@ -106,6 +106,27 @@ Credentials come from `CZB_HOME/.env` (`MONGODB_URI`, `MONGODB_DB`), never from 
 `mongod` with the unmodified dashboard: experiments, records, leaderboard, chart, worker card and `/api/frame`
 viewport all render.
 
+### Steady-state evolution + MongoDB agent memory (`bot/steady.py`, `bot/agent_memory.py`)
+Every game is one step, so improvement shows game by game instead of every 9-game generation:
+- **Champion/challenger:** a Luminal persona (Tuner → Bold → Defender → Explorer, rotating) proposes a change to the
+  champion. A challenger that beats the champion's mean plays one confirmation game and is promoted only if its
+  2-game mean still wins. The champion is re-evaluated every 5th game so its mean stays honest.
+- **MongoDB is the agents' memory**, using the team's Atlas collections and indexes:
+  - `episodes`: every game gets a 12-dim diagnostics vector (`episodes_vec`). Before each proposal, `$vectorSearch`
+    retrieves the most similar past games (what changed, what happened) into the agent's context.
+  - `lessons`: a promotion writes a *candidate*. The champion's next re-evaluation *validates* or *retires* it in
+    a multi-document transaction with the experiment record. Lessons matching the current situation go to the agent.
+  - `hud_states` time series: every 2 s heartbeat. `$setWindowFields` gives per-game trends.
+  - Each proposed strategy stores `memory_context` (retrieved episode ids, similarities, lessons). The dashboard
+    panel "What the agents remember" (branch `rishit/dashboard-memory`) shows it.
+- **Results so far (`rishit-steady`, Kino):** baseline mean 378 over 3 games, current champion (Tuner) 450 over 3
+  games (+19%). The best single game scored 2 kills, +410 points, 72 s. Samples are small and single games are noisy.
+
+```bash
+python -m bot.steady --state D:/czb/evo_state/steady.json --minutes 30 --publish   # memory on by default
+python -m tools.steady_report      # champion-mean curve + promotions
+```
+
 ### Feedback quality (what the agents see)
 - **Exact scoring:** after GAME OVER, the post-game table (Points / Kills / Headshots) is read by OCR, and its points
   replace the live-HUD estimate. `kills` and `headshots` are added to the diagnostics.
