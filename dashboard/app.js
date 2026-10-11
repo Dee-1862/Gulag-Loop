@@ -112,7 +112,7 @@ setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()+' LOCAL'
  const requested=new URLSearchParams(location.search).get('mode');
  if(['live','demo'].includes(requested))$('mode').value=requested;
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
- try{const c=await(await fetch('/api/config',{signal:controller.signal})).json();if(listVersion===0&&!['live','demo'].includes(requested))$('mode').value=c.default_mode==='demo'?'demo':'live';}catch{}finally{clearTimeout(timeout);}
+ try{const c=await(await fetch('/api/config',{signal:controller.signal})).json();if(listVersion===0&&!['live','demo'].includes(requested))$('mode').value=c.default_mode==='demo'?'demo':'live';if(c.control)enableControl();}catch{}finally{clearTimeout(timeout);}
  // A user's selection or pause takes precedence over a delayed startup response.
  if(listVersion!==0||paused)return;
  listing=false;if(await loadExperiments()){if(!paused)await refresh();}
@@ -320,3 +320,29 @@ function renderRecordings(data,query){
 // Fullscreen game view: the whole viewport (stream + overlays) fills the screen; Esc exits.
 $('fullscreen')?.addEventListener('click',()=>{const v=$('viewport');if(document.fullscreenElement)document.exitFullscreen();else v?.requestFullscreen?.();});
 $('stream-view')?.addEventListener('click',()=>{rawView=!rawView;const f=$('frame'),s=f.getAttribute('src')||'';if(s.includes('/stream.mjpg')){f.src=s.split('?')[0]+(rawView?'?view=raw':'');}$('stream-view').textContent=rawView?'RAW':'HUD';$('frame-label').textContent=rawView?'LIVE STREAM · RAW GAME':'LIVE STREAM · HUD';});
+
+// ---- Local game control (dashboard/control.py): only shown when the server allows it ----
+let controlTimer=null;
+async function controlCall(path,body){
+ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Control':'1'},body:JSON.stringify(body||{})});
+ const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));return d;
+}
+function showControl(s){
+ const box=$('control-status');box.hidden=false;
+ const tail=(s.log_tail||[]).slice(-1)[0]||'';
+ box.textContent=s.running?`● Bot running on ${s.experiment} (pid ${s.pid})${tail?' · '+tail.replace(/^\[[^\]]*\]\s*/,'').slice(0,110):''}`
+  :s.experiment?`Bot stopped${s.exit_code!=null?' (exit '+s.exit_code+')':''} · ${s.experiment}`:'Bot idle · pick an experiment and press ▶ Run bot';
+ box.classList.toggle('running',!!s.running);$('run-bot').disabled=!!s.running;$('stop-bot').disabled=!s.running;
+}
+async function pollControl(){try{showControl(await(await fetch('/api/control/status')).json());}catch{}}
+function enableControl(){
+ if(controlTimer)return;$('control-box').hidden=false;pollControl();controlTimer=setInterval(pollControl,3000);
+ $('run-bot').addEventListener('click',async()=>{const exp=$('experiment').value;if(!exp){alert('Select an experiment first, or press + New run.');return;}
+  try{showControl({running:true,experiment:exp,pid:'…'});showControl(await controlCall('/api/control/start',{experiment:exp,generations:2}));}catch(e){alert('Could not start: '+e.message);pollControl();}});
+ $('stop-bot').addEventListener('click',async()=>{try{showControl(await controlCall('/api/control/stop'));}catch(e){alert('Could not stop: '+e.message);}});
+ $('new-run').addEventListener('click',async()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');
+  const name=prompt('Name for the new experiment:',`exp-kino-${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`);if(!name)return;
+  try{showControl(await controlCall('/api/control/start',{experiment:name.trim(),generations:2}));
+   const o=document.createElement('option');o.value=name.trim();o.textContent=name.trim();$('experiment').appendChild(o);$('experiment').value=name.trim();$('experiment').dispatchEvent(new Event('change'));}
+  catch(e){alert('Could not start: '+e.message);}});
+}

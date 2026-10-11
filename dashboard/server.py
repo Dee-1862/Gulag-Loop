@@ -1,4 +1,7 @@
-"""Local read-only dashboard: python -m dashboard.server [--demo] [--port 8765]."""
+"""Local dashboard: python -m dashboard.server [--demo] [--port 8765] [--read-only].
+
+Reads MongoDB. Locally it can also start/stop ONE game worker (dashboard/control.py); --read-only or
+DASHBOARD_READ_ONLY=1 removes that (use it for any hosted copy)."""
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -62,7 +65,7 @@ class Backend:
             self.cache[experiment]=(time.monotonic(),result)
             return result
 
-def handler_for(backend):
+def handler_for(backend, control=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -109,7 +112,9 @@ def handler_for(backend):
                 return
             try:
                 if url.path=='/api/config':
-                    self.send(dict(default_mode='demo' if backend.default_demo else 'live'))
+                    self.send(dict(default_mode='demo' if backend.default_demo else 'live', control=control is not None))
+                elif url.path=='/api/control/status':
+                    self.send(control.status() if control else dict(enabled=False))
                 elif url.path=='/api/experiments':
                     source=backend.source(demo)
                     self.send(dict(experiments=source.experiments() if source else []))
@@ -131,14 +136,38 @@ def handler_for(backend):
             except Exception as exc:
                 # Never leak connection strings, credentials or provider errors.
                 self.send(dict(mode='live',connected=False,error='MongoDB could not be read. Check connectivity and database permissions.',error_type=type(exc).__name__),status=503)
+        def do_POST(self):
+            url=urlparse(self.path)
+            # Custom header: browsers can't send it cross-site without a CORS preflight, which we never grant.
+            if control is None or self.headers.get('X-Dashboard-Control')!='1':
+                self.send(dict(error='Control is disabled on this dashboard'),status=403)
+                return
+            try:
+                length=min(int(self.headers.get('Content-Length') or 0),4096)
+                body=json.loads(self.rfile.read(length) or b'{}')
+                if url.path=='/api/control/start':
+                    self.send(control.start(body.get('experiment',''),body.get('generations',2)))
+                elif url.path=='/api/control/stop':
+                    self.send(control.stop())
+                else:
+                    self.send(dict(error='Not found'),status=404)
+            except (ValueError,RuntimeError) as exc:
+                self.send(dict(error=str(exc)),status=409)
+            except Exception as exc:
+                self.send(dict(error='Could not control the worker',error_type=type(exc).__name__),status=500)
     return Handler
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--demo',action='store_true')
     parser.add_argument('--port',type=int,default=8765)
+    parser.add_argument('--read-only',action='store_true',help='no Start/Stop game buttons (use for hosted copies)')
     args=parser.parse_args()
-    server=ThreadingHTTPServer(('127.0.0.1',args.port),handler_for(Backend(args.demo)))
+    control=None
+    if not (args.demo or args.read_only or os.environ.get('DASHBOARD_READ_ONLY')):
+        from dashboard.control import WorkerControl
+        control=WorkerControl()
+    server=ThreadingHTTPServer(('127.0.0.1',args.port),handler_for(Backend(args.demo),control))
     print(f'Dashboard: http://127.0.0.1:{args.port} ({"demo" if args.demo else "live"} mode)',flush=True)
     try:
         server.serve_forever()
