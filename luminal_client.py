@@ -29,7 +29,16 @@ DIAGNOSTIC_GUIDANCE = (
     'spent retreating; compare durations cautiously. hits_proxy comes from OCR point increases, '
     'not verified hits. stuck_events is a visual-motion heuristic. Never invent missing diagnostics. '
     'reload_when_clear_at is an ammunition threshold; zero disables proactive reload. '
-    'Only suggest changes to the supplied strategy, not changes to code or vision weights.'
+    'Only suggest changes to the supplied strategy, not changes to code or vision weights. '
+    'Kill diagnostics ending in _est are estimated from changes in the on-screen points counter using the '
+    'game scoring (non-lethal hit 10; kill by headshot 100, neck 70, torso 60, limb 50; melee kill 130), '
+    'so they can be ambiguous. headshot_rate_est is headshot kills / estimated kills. head_aim_fire_pct is '
+    'the share of fire events with the crosshair inside the head zone of the target box (top 15%). '
+    'aim_y_offset sets where on the box the bot aims: 0 is the top of the box, 0.5 the middle. '
+    'damage_events counts red damage flashes; unseen_hits are those with no zombie on screen (attacked from '
+    'behind), which trigger an automatic turn-around. max_active_zombies and avg_active_zombies count zombies '
+    'seen within the last 6 s, including ones that left the screen. entry_points_known is how many zombie entry '
+    'directions have been learned for this map. recoil_comp_counts is the learned downward correction per shot.'
 )
 
 def load_config(path='.env'):

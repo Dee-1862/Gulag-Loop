@@ -1,178 +1,165 @@
-# Luminal strategy generation
+# Self-Improving Zombies Agents
 
-For teammate integration, start with [TEAMMATE_HANDOFF.md](TEAMMATE_HANDOFF.md).
+**A team of Luminal agents evolves a bot that plays Call of Duty: Black Ops Zombies. The bot's eyes run on the laptop GPU, every strategy and run lives in MongoDB, and improvement is checked on runs the agents never trained on.**
 
-Run commands from this directory. Credentials stay in the ignored `.env` file.
+Built at c0mpiled-15, Penn State, October 11, 2026. Game: the Black Ops 1 Zombies browser port ([vel.gg/bo1z](https://vel.gg/bo1z/kino), unofficial fan port), map Kino der Toten.
 
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python test_luminal.py
-.venv/bin/python test_luminal.py --live
-.venv/bin/python test_luminal.py --live --batch
+![HUD](docs/img/hud_acquiring.jpg)
+
+## How it works
+
+1. **On-device vision** (`vision/`) captures the game window, finds zombies with a distilled YOLO model (TensorRT, ~6 ms/frame), tracks them, and reports the aim error in pixels.
+2. **A controller** turns that into mouse and keyboard input, following a 12-number **strategy** (aim gain, fire radius, retreat distance, strafing...).
+3. **A worker** claims an evaluation job from MongoDB, plays one 3-minute run with that strategy, and stores points, survival and diagnostics.
+4. **Four Luminal agents** (Bold, Tuner, Defender, Explorer) read the top two strategies and their diagnostics, and propose four new ones each generation. The current champion is re-run every generation, so one lucky run can't stay on top.
+5. **MongoDB** holds every strategy, job, run and model call, saves each generation in one transaction, and computes the leaderboard and family tree.
+
+```mermaid
+flowchart LR
+  subgraph LAPTOP["Game laptop · on-device"]
+    GAME["Chrome: vel.gg/bo1z"] -->|frames| VIS["vision/pipeline.py<br/>YOLO + tracker"]
+    VIS -->|aim error, telemetry| CTRL["bot/controller.py<br/>mouse + keys"]
+    CTRL -->|pydirectinput| GAME
+    WORK["bot/worker.py"] --> CTRL
+  end
+  subgraph ATLAS["MongoDB Atlas"]
+    JOBS[(jobs)]
+    RUNS[(runs)]
+    PB[(playbooks)]
+    LLM[(llm_calls)]
+    GEN[(generations)]
+  end
+  subgraph ORCH["Orchestrator"]
+    MO["mongo_orchestrator.py"] --> LUM["luminal_client.py<br/>4 personas, DeepSeek V4.1 Flash"]
+  end
+  WORK <-->|claim job / store run| JOBS
+  WORK --> RUNS
+  MO <--> PB
+  MO --> JOBS
+  MO --> LLM
+  MO --> GEN
+  RUNS --> MO
 ```
 
-`--live` sends a billable request to Luminal. The default test is offline.
-Copy `.env.example` to `.env` only if you do not already have credentials configured.
-The batch command starts four persona requests concurrently. Each may retry once
-at the proposal level, in addition to SDK transient-error retries.
+## Status
 
-## Teammate integration
+| Part | Owner | Code | State |
+| --- | --- | --- | --- |
+| Vision: capture, detector, tracker, HUD | Rishit | `vision/`, `config.yaml` | Built. Distilled model reaches mAP50 0.58 against its teacher's labels; runs on Rishit's laptop (weights on `D:\czb`) |
+| Strategy schema + Luminal agents | Jeffrey | `strategy.py`, `luminal_client.py`, `generation.py`, `evolution.py` | Built. 14 unit tests pass; live calls return valid proposals |
+| MongoDB orchestration + memory | Deekshith | `mongo_orchestrator.py`, `common/`, `scripts/` | Built. 13 offline + 15 live end-to-end checks pass |
+| Browser game driver | Rishit | `bot/game.py`, `tools/port_probe.py` | Built. Isolated Chrome on the dGPU, load/start/restart, pointer lock. **Gate 1 passes** (scripted mouse turns the camera) |
+| Controller: mouse + keyboard | Rishit | `bot/controller.py` | Built. Executes all 12 strategy params, F8 abort, computes §5.4 diagnostics. **Gate 2 passes** (first autonomous kill on the port) |
+| Worker: job → run → result | Rishit, Deekshith | `bot/worker.py` | Built. Calibrates mouse sensitivity, runs 180 s episodes; claims jobs from MongoDB and auto-proposes generations |
+| Points OCR + game-over detection | Rishit | `bot/hudread.py` | Built (easyocr on fixed 720p crops) |
+| Dashboard | — | — | **Not built** (data and queries exist: `leaderboard()`, `playbook_lineage()`) |
 
-```python
-from luminal_client import LuminalClient
-from strategy import Strategy
+## Repository layout
 
-client = LuminalClient()
-result = client.generate(
-    parent=Strategy.model_validate(parent_document['params']),
-    parent_id=str(parent_document['_id']),
-    diagnostics=run_summary['diagnostics'],
-    fitness=run_summary['fitness'],
-    generation=parent_document['generation'] + 1,
-    persona='Tuner',  # Bold, Tuner, Defender, Explorer
-    history=[],
-)
-# MongoDB owner persists result['strategy'] and result['llm_calls'].
-# Controller reads result['strategy']['params'].
+```
+vision/                 on-device eyes (see MD files/VISION.md)
+bot/                    browser game driver, controller (mouse + keys), awareness, scoring, HUD OCR, worker
+                        bot/loop.py: single-laptop loop with a JSON state file (no MongoDB)
+tools/port_probe.py     Gate 1 / Gate 2 test on the browser port
+config.yaml             capture window, model path, masks, calibrated per machine
+strategy.py             the 12-parameter strategy schema shared with the controller
+luminal_client.py       4 persona agents, validation, retries, fallbacks
+generation.py           one generation from ranked parents
+evolution.py            ranking, champion re-evaluation, job rules (pure functions)
+evolve_local.py         same loop with a JSON file instead of MongoDB
+mongo_orchestrator.py   same loop on MongoDB: atomic job queue, transactional generations
+common/                 MongoDB connection, collection names, memory queries
+scripts/                setup_db, smoke tests, end-to-end test, results chart
+tests/                  offline unit tests (no network)
+MD files/               all documentation (index below)
+docs/img/               images used in the docs
 ```
 
-For a complete generation, call `client.generate_batch()` with the same arguments
-except `persona`. It returns `strategies` (four child documents in Bold, Tuner,
-Defender, Explorer order), flattened `llm_calls`, `generation`, total `latency_ms`,
-and `fallback_count`. Each child retains its own parent ID and unique strategy ID.
-One persona's API or output-validation failure produces its own fallback while
-successful siblings are preserved. Shared invalid input is rejected before requests.
+## Setup
 
-```python
-batch = client.generate_batch(
-    parent=parent_document['params'],
-    parent_id=str(parent_document['_id']),
-    diagnostics=run_summary['diagnostics'],
-    fitness=run_summary['fitness'],
-    generation=parent_document['generation'] + 1,
-    history=[],
-)
-# MongoDB owner persists batch['strategies'] and batch['llm_calls'].
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+copy .env.example .env          # fill in MONGODB_URI and LUMINAL_API_KEY
+.venv\Scripts\python scripts\setup_db.py
 ```
 
-This initial batch uses one selected parent for all four personas. Top-two parent
-selection, champion re-evaluation, and job claiming remain orchestrator responsibilities.
+The vision side needs CUDA PyTorch and TensorRT first; follow [MD files/VISION.md](MD%20files/VISION.md#setup-windows--nvidia-gpu).
 
-All twelve strategy fields are required. Numeric values are clamped; wrong types,
-unknown fields, invalid enums, and nonfinite numbers are rejected. Persona constraints
-are enforced after validation. Two proposal attempts are allowed; failed proposals
-produce an explicitly marked local mutation fallback. The SDK separately retries
-transient request errors twice. Logs exclude credentials and raw error bodies.
+## Run everything (game laptop)
 
-The Luminal client does not run games or write to MongoDB. The optional local
-orchestrator described below handles ranking and file-based queueing. Sample
-diagnostics are synthetic, not evidence of improvement.
-
-## JSON handoff runner (one or two ranked parents)
-
-Validate sample inputs without credentials or network requests:
-
-```sh
-.venv/bin/python generate_strategies.py --input examples/generation_input.json --dry-run
+```bash
+python mongo_orchestrator.py --experiment exp-kino-1 init --map kino          # once
+python -m bot.worker calibrate                                                 # once per machine
+python -m bot.worker run --experiment exp-kino-1 --propose --generations 8     # plays, stores, evolves
 ```
 
-Generate four real proposals and export the handoff:
+The worker opens the game in its own Chrome, claims a job from MongoDB, plays a 180 s episode with that strategy, stores the run, and repeats. With `--propose`, when the queue is empty it asks Luminal for the next generation itself. Extra laptops run the same command without `--propose` and share the queue. **The mouse belongs to the game while it runs: F8 aborts (the job goes back in the queue), Esc in game releases the mouse.**
 
-```sh
-.venv/bin/python generate_strategies.py --input examples/generation_input.json --output outputs/generation-2.json
+Detector weights: `config.yaml` first, else `model/zombies_v1.engine` or `model/zombies_v1.pt` (gitignored). Large local files go to `D:/czb` if it exists, else `local_data/` (override with `CZB_DIR`).
+
+### What the bot does on its own (not evolved)
+
+- **Awareness** (`bot/awareness.py`): tracks its heading from the mouse counts it sends; remembers zombies that left the screen and turns toward the nearest; a red damage flash with nothing on screen makes it turn around and back off; learns the map's **entry points** (where zombies first appear) and stores them per map in MongoDB (`entry_events`), then watches them in turn; measures recoil per shot and pulls down against it.
+- **Scoring** (`bot/scoring.py`): classifies each points-counter change with BO1 values (hit 10, headshot kill 100, torso 60…) into `headshot_rate_est` and related diagnostics, so the agents can see whether head aim pays off.
+- **Rishit's safety rules**: engages only zombies confirmed over 3+ frames, fires when the crosshair is on the body, caps and levels pitch, reloads on empty, reads game-over twice.
+- **HUD**: red layer on every zombie, highlighted head zone on the target, and a compass strip with remembered zombies, entry points and the active-zombie count.
+
+## Run the evolution loop on MongoDB (manual steps)
+
+```bash
+python mongo_orchestrator.py --experiment exp-kino-1 init --map kino
+python mongo_orchestrator.py --experiment exp-kino-1 claim --worker laptop-1   # job + strategy params for the controller
+python mongo_orchestrator.py --experiment exp-kino-1 complete --result result.json
+python mongo_orchestrator.py --experiment exp-kino-1 propose                   # calls Luminal (--dry-run to preview)
+python mongo_orchestrator.py --experiment exp-kino-1 status
+python mongo_orchestrator.py --experiment exp-kino-1 requeue --minutes 10      # jobs from a crashed worker
 ```
 
-The example contains synthetic data. Replace it with actual run summaries to evaluate
-real behavior. Each parent supplies `strategy_id`, `params`, `diagnostics`,
-`mean_fitness`, and `evaluation_count`. Parents are already ranked, champion first;
-the runner does not calculate rankings. `generation` and optional `history` are shared.
-With two parents, Tuner and Defender modify the champion; Bold and Explorer modify
-the runner-up. All personas see both parents as comparison context. With one parent,
-all four use it. `parent_ids` records the actual mutation parent, not both references.
+A result is `{"job_id", "strategy_id", "worker", "map", "points", "survival_s", "diagnostics"}`; fitness is `points + 5 × survival_s`.
 
-For Python integration use `generation.generate_generation(client, input_document)`.
-Output has the same `strategies` and `llm_calls` batch structure as `generate_batch`.
-Calls are linked to children by `strategy_id`; UTC timestamps and per-attempt prompt
-hashes support audit logging. The CLI refuses to overwrite existing output files.
-The `outputs/` directory is ignored by Git so run artifacts stay local by default.
+| Collection | Holds |
+| --- | --- |
+| `playbooks` | Every strategy: params, persona, rationale, parent, champion flag |
+| `jobs` | Evaluation queue (`queued` → `running` → `done`), claimed atomically |
+| `runs` | One document per game run: points, survival, fitness, diagnostics |
+| `llm_calls` | Every Luminal attempt: model, latency, tokens, prompt hash, success |
+| `generations` | Champion and its mean fitness per generation |
+| `experiments` | Map, current generation, start time |
 
-## Complete local evolution loop
+The memory collections (`episodes`, `lessons`, `situations`, `hud_states`, `working_memory`) and their vector indexes are set up for lesson memory; see [MD files/RESEARCH.md](MD%20files/RESEARCH.md).
 
-The standalone local orchestrator implements §3/§5.5's selection loop without MongoDB
-or vision code. It queues two baseline runs, ranks evaluated strategies by mean
-`points + 5 × survival_s`, retains the top two, generates four children, and queues
-one champion re-evaluation every generation. Every historical evaluation contributes
-to the mean. It waits for all issued jobs before advancing and retains full lineage,
-run diagnostics, strategy rationales, and API call logs in a JSON state file.
+## Tests
 
-```sh
-.venv/bin/python evolve_local.py --state outputs/evolution.json init
-.venv/bin/python evolve_local.py --state outputs/evolution.json jobs
-# A game worker or teammate supplies results.json matching those job IDs.
-.venv/bin/python evolve_local.py --state outputs/evolution.json ingest --results results.json
-.venv/bin/python evolve_local.py --state outputs/evolution.json propose --dry-run
-.venv/bin/python evolve_local.py --state outputs/evolution.json propose
-.venv/bin/python evolve_local.py --state outputs/evolution.json status
-```
+| Command | What it checks | Network |
+| --- | --- | --- |
+| `python -m unittest discover -s tests` | Strategy validation, personas, evolution rules | none |
+| `python scripts/smoke_test.py` | Memory layer: vector search, retrieval scoring, lesson lifecycle | MongoDB |
+| `python scripts/test_mongo_luminal.py` | Full loop on MongoDB with mock agents | MongoDB |
+| `python scripts/test_mongo_luminal.py --live` | Same, generation 1 from real Luminal agents (billable) | MongoDB + Luminal |
+| `python scripts/test_worker_mongo.py` | Real `bot/worker.py` loop on MongoDB with game, vision and mouse faked: claim, F8 requeue, store, auto-propose 2 generations | MongoDB |
+| `python scripts/test_worker_mongo.py --live` | Same, proposals from real Luminal | MongoDB + Luminal |
+| `python -m tools.port_probe --map kino --gate1 --bot-seconds 60` | Real game: Gate 1 + 60 s of bot (**takes the mouse**) | game |
+| `python test_luminal.py --live` | One Luminal proposal | Luminal |
 
-`propose` without `--dry-run` calls Luminal. Repeat `jobs → ingest → propose` as
-results arrive. The state is saved after every transition and can be resumed.
-Use one process at a time per state file. An issued job has a unique `job_id`,
-`strategy_id`, `kind`, and controller-ready `params`. Imported results are a JSON
-array of objects in this shape (replace IDs with the actual issued IDs):
+All run results in these tests are synthetic; they prove the plumbing, not gameplay improvement.
 
-```json
-[{
-  "job_id": "issued-job-id",
-  "strategy_id": "baseline",
-  "worker": "laptop-1",
-  "map": "kino",
-  "points": 200,
-  "survival_s": 112.0,
-  "diagnostics": {"overshoot_rate": 0.58, "time_no_target_pct": 37}
-}]
-```
+## Documentation
 
-`points` means points gained, and survival is bounded to the plan's 180-second
-horizon. Fitness is calculated locally rather than trusting an arbitrary supplied
-fitness. Duplicate identical imports are harmless; conflicting imports, unknown
-jobs, strategy mismatches, and invalid results are rejected before saving anything.
-To avoid comparing incompatible hardware or maps, a local state uses one worker
-and map. Multi-worker normalization belongs in the production orchestrator adapter.
-Numeric diagnostics present in every run are averaged; other shared fields use the
-latest value. Missing diagnostics are omitted instead of fabricated.
+| Document | Contents |
+| --- | --- |
+| [Build plan](MD%20files/cod-zombies-agent-plan.md) | Full design, module specs, risks, timeline, video script |
+| [Vision](MD%20files/VISION.md) | Detector distillation, speed, tracker, HUD, setup |
+| [Luminal](MD%20files/LUMINAL.md) | Strategy generation, personas, JSON handoff, local loop |
+| [Teammate handoff](MD%20files/TEAMMATE_HANDOFF.md) | Integration contracts between the three parts |
+| [Architecture](MD%20files/ARCHITECTURE.md) | MongoDB connection map |
+| [Research](MD%20files/RESEARCH.md) | Memory design and the papers behind it |
+| [Demo](MD%20files/DEMO.md) | 90-second video shot list |
 
-Exercise the full loop without credentials or teammates:
+## Limitations
 
-```sh
-.venv/bin/python offline_demo.py
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-The offline demo uses fabricated constant scores and local mutations. It proves
-control flow only, not Luminal usage or gameplay improvement.
-
-## Reliability and configuration
-
-Configure concurrency (1–4), request timeout, SDK transient retries, output token
-budget, and optional JSON mode using `.env.example`. Prompt-only JSON is the
-default; JSON mode is opt-in because endpoint support may vary. Each agent has
-at most two proposal attempts, in addition to SDK retries with backoff.
-
-All personas must change something. Bold changes 2–4 parameters; Tuner changes
-1–2 numeric values by at most 15%; Defender changes only survival parameters;
-Explorer changes only targeting or strafe mode. Prompts explain diagnostic units
-and measurement limitations. Logs include clamped parameter names and children
-include changed parameter names.
-
-A failed agent first tries its last successful cached proposal, revalidating it
-against the current parent and persona. Otherwise it makes a bounded local mutation.
-Both paths are marked `fallback=true` and carry a `fallback_source`; neither is
-reported as a fresh successful LLM call. Cache is in memory per client; the local
-orchestrator restores it from successful strategies in its state when resumed.
-
-Your MongoDB teammate can replace local storage while retaining the input/output
-contracts. Your controller teammate executes jobs and supplies telemetry. Manual
-restart, screen capture, detection, scoring/OCR collection, and worker-specific
-normalization are not implemented in this Luminal module.
+- The detector was trained on footage of the original game, not the browser port, and on its teacher's labels rather than ground truth.
+- On the port the detector sees zombies in only ~10% of frames so far; episodes save raw port frames for retraining.
+- No gameplay improvement has been measured yet; all test runs are synthetic.
+- Cluster runs MongoDB 8.0 (Atlas free tier); we make no MongoDB 9.0 performance claims.
+- The game is an unofficial fan port; we link to it and include none of its files.
