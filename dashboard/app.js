@@ -29,6 +29,14 @@ function cancelListing(){listVersion++;listRequest?.abort();listRequest=null;lis
 function currentRequest(version,query){return version===requestVersion&&query.toString()===params().toString();}
 async function updateFrame(data,query,version,signal){
  const active=data.workers?.find(w=>w.state==='running');
+ // A worker started with --stream (bot/livestream.py) advertises a local MJPEG URL in its heartbeat:
+ // show the HUD live (~10-15 fps) instead of the 2 s snapshots.
+ const stream=data.mode!=='demo'&&typeof active?.stream==='string'&&/^http:\/\/127\.0\.0\.1:\d+\//.test(active.stream)?active.stream:null;
+ if(stream){
+  if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}
+  if($('frame').getAttribute('src')!==stream)$('frame').src=stream;
+  $('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='LIVE STREAM';return;
+ }
  if(data.mode==='demo'){clearFrame();$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
  $('frame-label').textContent='NO LIVE FRAME';
  if(!active){clearFrame();return;}
@@ -304,3 +312,6 @@ function renderRecordings(data,query){
   const v=$('recording');v.src='/api/video?'+q;v.hidden=false;$('recording-empty').hidden=true;v.play().catch(()=>{});
   $('recording-caption').textContent=`Job ${recordingJob} · annotated HUD view recorded by the vision worker`;}));
 }
+
+// Fullscreen game view: the whole viewport (stream + overlays) fills the screen; Esc exits.
+$('fullscreen')?.addEventListener('click',()=>{const v=$('viewport');if(document.fullscreenElement)document.exitFullscreen();else v?.requestFullscreen?.();});

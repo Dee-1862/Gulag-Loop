@@ -6,6 +6,7 @@ Lessons baked in (see README "Browser port test"):
 - An Alt tap while in game makes Chrome drop pointer lock (game pauses), so only refocus when needed.
 """
 import ctypes
+import os
 import ctypes.wintypes as wt
 import time
 
@@ -83,7 +84,9 @@ class PortGame:
             col, row = self.slot % 2, self.slot // 2
             args = [a for a in CHROME_ARGS if not a.startswith("--window-size")] + [
                 "--app=about:blank", f"--window-size={TILE_W + 16},{TILE_H + APP_CHROME_H}",
-                f"--window-position={col * (TILE_W + 24)},{row * 300}",  # may overlap: frames come from the page
+                (f"--window-position={-4000 - col * (TILE_W + 24)},{row * 300}" if os.environ.get("BOT_OFFSCREEN")
+                 else f"--window-position={col * (TILE_W + 24)},{row * 300}"),  # may overlap: frames come from the page
+                "--disable-features=CalculateNativeWinOcclusion",  # keep rendering when hidden/off-screen
                 "--autoplay-policy=no-user-gesture-required"]
             viewport = None
         kw = {"viewport": viewport} if viewport else {"no_viewport": True}  # no_viewport: window size is respected

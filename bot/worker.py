@@ -136,6 +136,9 @@ class Runner:
                     ok, enc = cv2.imencode(".jpg", cv2.resize(frame, (640, 360)), [cv2.IMWRITE_JPEG_QUALITY, 65])
                     if ok:
                         values["frame"] = base64.b64encode(enc).decode("ascii")
+                from bot import livestream
+                if livestream.active():
+                    values.setdefault("stream", livestream.url())  # dashboard shows the live HUD stream
                 self.reporter.emit(worker=self.worker, state="running", job_id=job["job_id"],
                                    generation=job.get("generation", 0), **values)
         progress(action="STARTING")
@@ -207,6 +210,10 @@ def main():
     ap.add_argument("--worker", default=socket.gethostname())
     ap.add_argument("--weights", default=None, help="detector weights; default: config.yaml, else model/zombies_v1.*")
     ap.add_argument("--live-view", action="store_true", help="show the HUD (red overlays + 360 radar) in a window")
+    ap.add_argument("--stream", action="store_true",
+                    help="serve the live HUD at http://127.0.0.1:8766/stream.mjpg for the dashboard viewport")
+    ap.add_argument("--offscreen", action="store_true",
+                    help="with --slot: open the game window off-screen (watch it in the dashboard instead)")
     ap.add_argument("--slot", type=int, default=None,
                     help="with --experiment: play in a small tiled window with in-page input (no physical mouse)")
     ap.add_argument("--experiment", default=None, help="claim jobs from this MongoDB experiment (mongo_orchestrator)")
@@ -232,6 +239,11 @@ def main():
             game.close()
         return
 
+    if args.stream:
+        from bot import livestream
+        log(f"live stream for the dashboard: {livestream.start()}")
+    if args.offscreen:
+        os.environ["BOT_OFFSCREEN"] = "1"
     if args.experiment:
         run_mongo(args)
         return

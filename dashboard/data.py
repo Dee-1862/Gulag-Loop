@@ -151,7 +151,7 @@ class MongoSource:
             playbook_projection = {k:1 for k in RECORD_FIELDS['strategies']}
             playbook_projection.update({f'params.{k}':1 for k in PARAM_FIELDS})
             playbooks = list(self.db.playbooks.find(q, playbook_projection).sort([('generation', -1), ('created_at', -1)]).limit(500))
-            signals = list(self.db.dashboard_status.find(q, {k:1 for k in ('component','identity','worker','state','persona','generation','attempt','updated_at','fps','detections','action','points','elapsed_s','job_id')}).sort('updated_at', -1).limit(50))
+            signals = list(self.db.dashboard_status.find(q, {k:1 for k in ('component','identity','worker','state','persona','generation','attempt','updated_at','fps','detections','action','points','elapsed_s','job_id','stream')}).sort('updated_at', -1).limit(50))
             counts = {c: self.db[c].count_documents(q) for c in ('jobs','runs','playbooks','llm_calls')}
             result = assemble(exp, jobs, runs, calls, playbooks, signals, counts)
             result['jobs'] = {r['_id']: r['count'] for r in self.db.jobs.aggregate([

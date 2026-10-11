@@ -17,6 +17,7 @@ import numpy as np
 
 from bot.awareness import EntryPoints, Heading, ZombieMemory, wrap180
 from bot.scoring import classify_delta, in_head_zone, summarize as summarize_shots
+from bot import livestream
 from bot.tactics import Tactics
 
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
@@ -421,13 +422,14 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                                     detections=obs.telemetry["n_tracks"], action=action,
                                     points=(points - points0) if (points is not None and points0 is not None) else 0,
                                     elapsed_s=round(el, 1), force=True)
-            if (rec or live_view) and n % 2 == 0:
+            if (rec or live_view or livestream.active()) and n % 2 == 0:
                 img = vp.hud_frame(radar=radar_now(), info={"action": action, "points": points if points is not None else "-",
                                              "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
                                                          f"{S['target_rule']}"},
                                        fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H)
                 if rec:
                     rec.write(img)
+                livestream.publish(img)  # dashboard live view
                 if live_view:
                     cv2.imshow("ZOMBIE VISION (live)", img)
                     cv2.waitKey(1)
