@@ -1,11 +1,48 @@
 import json
 import unittest
+from threading import Barrier
 from types import SimpleNamespace
 from pydantic import ValidationError
 from strategy import BASELINE, Strategy
-from luminal_client import LuminalClient, parse_proposal, enforce_persona, mutate
+from luminal_client import LuminalClient, PERSONAS, parse_proposal, enforce_persona, mutate
 
 class GenerationTests(unittest.TestCase):
+    def test_batch_runs_concurrently_and_preserves_successes(self):
+        barrier = Barrier(4, timeout=5)
+        client = LuminalClient.__new__(LuminalClient)
+        client.model = 'test-model'
+        def create(**kwargs):
+            system = kwargs['messages'][0]['content']
+            persona = next(p for p in PERSONAS if 'Persona: ' + p + '.' in system)
+            if len(kwargs['messages']) == 2:
+                barrier.wait()  # Sequential execution would time out.
+            if persona == 'Defender':
+                raise TimeoutError('simulated provider failure')
+            params = BASELINE.model_dump()
+            if persona == 'Explorer':
+                params['strafe_mode'] = 'alternate'
+            else:
+                params['aim_gain'] = 0.72
+            content = json.dumps(dict(strategy=params, rationale='Sample proposal.'))
+            return SimpleNamespace(model='test-model', usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        result = client.generate_batch(BASELINE, {'overshoot_rate': 0.58},
+                                       generation=3, parent_id='champion')
+        self.assertEqual([x['persona'] for x in result['strategies']], list(PERSONAS))
+        self.assertEqual(result['fallback_count'], 1)
+        self.assertEqual(len(result['llm_calls']), 5)
+        self.assertEqual(len({x['_id'] for x in result['strategies']}), 4)
+        for child in result['strategies']:
+            self.assertEqual(child['parent_ids'], ['champion'])
+            self.assertEqual(child['generation'], 3)
+            self.assertEqual(child['fallback'], child['persona'] == 'Defender')
+
+    def test_batch_rejects_invalid_telemetry_before_requests(self):
+        client = LuminalClient.__new__(LuminalClient)
+        with self.assertRaises(ValueError):
+            client.generate_batch(BASELINE, {'overshoot_rate': float('nan')})
+
     def test_bounds_and_bad_types(self):
         params = BASELINE.model_dump()
         params['aim_gain'] = 99.0

@@ -14,11 +14,16 @@ DIAGNOSTICS = {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--live', action='store_true', help='Send an authenticated Luminal request')
+    parser.add_argument('--batch', action='store_true', help='Generate all four personas concurrently (requires --live)')
     args = parser.parse_args()
+    if args.batch and not args.live:
+        parser.error('--batch requires --live')
     if args.live:
-        result = LuminalClient().generate(BASELINE, DIAGNOSTICS, fitness=640)
+        client = LuminalClient()
+        generate = client.generate_batch if args.batch else client.generate
+        result = generate(BASELINE, DIAGNOSTICS, fitness=640)
         print(json.dumps(result, indent=2))
-        if result['strategy']['fallback']:
+        if result.get('fallback_count', 0) or (not args.batch and result['strategy']['fallback']):
             raise SystemExit('Live proposal failed; returned a local fallback. See call error types above.')
     else:
         params = BASELINE.model_dump()

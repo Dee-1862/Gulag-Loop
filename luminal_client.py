@@ -1,5 +1,7 @@
 """Luminal strategy proposals; persistence is owned by the orchestrator."""
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import json
 import os
 import random
@@ -75,6 +77,35 @@ def mutate(parent, persona):
     return Strategy.model_validate(params)
 
 class LuminalClient:
+    def generate_batch(self, parent, diagnostics, generation=1,
+                       parent_id='baseline', fitness=None, history=None):
+        """Generate four children concurrently, in stable persona order.
+
+        Validate shared inputs before starting requests. Each generate() call
+        owns its retries and fallback, so a failed API call does not discard
+        proposals from other personas. No database writes occur here.
+        """
+        parent = parent if isinstance(parent, Strategy) else Strategy.model_validate(parent)
+        # Fail before network activity if telemetry cannot be encoded as JSON.
+        json.dumps(dict(diagnostics=diagnostics, history=history or [], fitness=fitness),
+                   allow_nan=False)
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=len(PERSONAS)) as pool:
+            futures = [pool.submit(
+                self.generate, parent=parent.model_copy(deep=True),
+                diagnostics=deepcopy(diagnostics), persona=persona,
+                generation=generation, parent_id=parent_id, fitness=fitness,
+                history=deepcopy(history or []),
+            ) for persona in PERSONAS]
+            results = [future.result() for future in futures]
+        strategies = [result['strategy'] for result in results]
+        return dict(
+            generation=generation, strategies=strategies,
+            llm_calls=[call for result in results for call in result['llm_calls']],
+            latency_ms=round((time.monotonic() - started) * 1000),
+            fallback_count=sum(strategy['fallback'] for strategy in strategies),
+        )
+
     def __init__(self, config=None):
         config = config or load_config()
         if not config.get('LUMINAL_API_KEY'):
