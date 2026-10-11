@@ -16,3 +16,4 @@
 .view-btn{right:56px;width:auto;padding:0 10px;font:600 11px 'DM Sans',sans-serif;letter-spacing:.8px}
 .control-box{display:inline-flex;gap:6px;margin-right:4px}.run-btn{background:#27352b;border-color:#5f7a43;color:var(--green);font-weight:600}.run-btn:disabled{opacity:.45}
 .control-status{margin:0 0 10px;font:11px monospace;color:var(--muted)}.control-status.running{color:var(--green)}
+.viewport video.replay{width:100%;height:100%;object-fit:contain;display:block}.viewport:fullscreen video.replay{max-height:100vh}

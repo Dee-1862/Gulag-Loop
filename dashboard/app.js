@@ -23,7 +23,19 @@ function drawChart(rows=[]){
  $('chart').innerHTML=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Best and mean run fitness by generation"><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c4ed91" stop-opacity=".13"/><stop offset="100%" stop-color="#c4ed91" stop-opacity="0"/></linearGradient></defs>${grid}<path d="${path('best')} L${x(rows.length-1)},${y(0)} L${x(0)},${y(0)} Z" fill="url(#fill)"/><path d="${path('mean')}" stroke="#83ced8" stroke-width="1.5" fill="none" stroke-dasharray="4 4"/><path d="${path('best')}" stroke="#c4ed91" stroke-width="2" fill="none"/>${rows.map((r,i)=>`<circle cx="${x(i)}" cy="${y(r.best)}" r="3" fill="#c4ed91"><title>Generation ${esc(r.generation)}: best ${fmt(r.best)}, mean ${fmt(r.mean)}</title></circle>`).join('')}${labels}</svg>`;
 }
 function events(){let list=snapshot?.events||[];if(filter==='mongo')list=list.filter(e=>e.kind!=='llm');if(filter==='llm')list=list.filter(e=>e.kind==='llm');$('events').innerHTML=list.length?list.slice(0,7).map(e=>`<div class="event-row"><span><i class="event-dot ${esc(e.kind)}"></i>${esc(e.title)}</span><span>${esc(e.detail)}</span><span>${esc(e.collection)}</span><span title="${esc(e.at)}">${ageLabel(e.at)}</span></div>`).join(''):'<p class="empty">No matching activity recorded.</p>';}
-function clearFrame(){if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
+// When nothing is live, the viewport plays the experiment's latest recorded game (labelled as a replay).
+let streamBroken=0;
+function hideReplay(){const v=$('replay');if(v){v.hidden=true;try{v.pause();}catch{}}}
+function showReplay(data,query){
+ const f=(data.footage||[])[0];if(!f||!f.job_id)return false;
+ let v=$('replay');
+ if(!v){v=document.createElement('video');v.id='replay';v.className='replay';v.muted=true;v.autoplay=true;v.loop=true;v.playsInline=true;$('viewport').insertBefore(v,$('frame'));}
+ const q=new URLSearchParams(query);q.set('job',f.job_id);const src='/api/video?'+q;
+ if(v.getAttribute('src')!==src){v.src=src;try{const p=v.play();if(p&&p.catch)p.catch(()=>{});}catch{}}
+ v.hidden=false;$('frame').hidden=true;$('frame-empty').hidden=true;
+ $('frame-label').textContent=`LATEST REPLAY · GEN ${f.generation??0}`;return true;
+}
+function clearFrame(){hideReplay();if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
 function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}
 function cancelListing(){listVersion++;listRequest?.abort();listRequest=null;listing=false;}
 function currentRequest(version,query){return version===requestVersion&&query.toString()===params().toString();}
@@ -33,9 +45,11 @@ async function updateFrame(data,query,version,signal){
  const active=data.workers?.find(w=>w.state==='running');
  // A worker started with --stream (bot/livestream.py) advertises a local MJPEG URL in its heartbeat:
  // show the HUD live (~10-15 fps) instead of the 2 s snapshots.
- const stream=data.mode!=='demo'&&typeof active?.stream==='string'&&/^http:\/\/127\.0\.0\.1:\d+\//.test(active.stream)?active.stream:null;
+ const streamOK=typeof active?.stream==='string'&&/^(http:\/\/127\.0\.0\.1:\d+|https:\/\/[a-z0-9-]+\.trycloudflare\.com)\//.test(active.stream);
+ const stream=data.mode!=='demo'&&streamOK&&Date.now()-streamBroken>15000?active.stream:null;
  if(stream){
-  if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}
+  if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}hideReplay();
+  $('frame').onerror=()=>{streamBroken=Date.now();$('frame').removeAttribute('src');};
   const want=stream+(rawView?'?view=raw':'');
   if($('frame').getAttribute('src')!==want)$('frame').src=want;
   $('stream-view').hidden=false;$('stream-view').textContent=rawView?'RAW':'HUD';
@@ -43,7 +57,7 @@ async function updateFrame(data,query,version,signal){
  }
  if(data.mode==='demo'){clearFrame();$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
  $('frame-label').textContent='NO LIVE FRAME';
- if(!active){clearFrame();return;}
+ if(!active){clearFrame();showReplay(data,query);return;}
  const frameQuery=new URLSearchParams(query);frameQuery.set('worker',active.identity||active.worker||'');
  if(active.job_id)frameQuery.set('job',active.job_id);
  try{

@@ -167,7 +167,10 @@ def main():
     if not (args.demo or args.read_only or os.environ.get('DASHBOARD_READ_ONLY')):
         from dashboard.control import WorkerControl
         control=WorkerControl()
-    server=ThreadingHTTPServer(('127.0.0.1',args.port),handler_for(Backend(args.demo),control))
+    host=os.environ.get('HOST','127.0.0.1')  # Render/hosting: HOST=0.0.0.0 and PORT from the platform
+    if host!='127.0.0.1':
+        control=None  # never expose game control off this machine
+    server=ThreadingHTTPServer((host,int(os.environ.get('PORT',args.port))),handler_for(Backend(args.demo),control))
     print(f'Dashboard: http://127.0.0.1:{args.port} ({"demo" if args.demo else "live"} mode)',flush=True)
     try:
         server.serve_forever()

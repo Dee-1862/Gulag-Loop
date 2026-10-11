@@ -102,6 +102,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def url():
+    """Stream URL advertised to the dashboard. STREAM_PUBLIC_URL (e.g. a Cloudflare tunnel to :8766) lets a
+    hosted dashboard reach it; otherwise it's the local address."""
+    import os
+    public = os.environ.get("STREAM_PUBLIC_URL", "").strip().rstrip("/")
+    if public:
+        return f"{public}/stream.mjpg"
     return f"http://127.0.0.1:{_server.server_address[1]}/stream.mjpg" if _server else None
 
 
