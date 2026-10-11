@@ -27,13 +27,14 @@ function events(){let list=snapshot?.events||[];if(filter==='mongo')list=list.fi
 let streamBroken=0;
 function hideReplay(){const v=$('replay');if(v){v.hidden=true;try{v.pause();}catch{}}}
 function showReplay(data,query){
- const f=(data.footage||[])[0];if(!f||!f.job_id)return false;
+ // best-scoring recorded game of this experiment (latest as tie-break)
+ const f=[...(data.footage||[])].filter(x=>x&&x.job_id).sort((a,b)=>(b.fitness??-1)-(a.fitness??-1))[0];if(!f)return false;
  let v=$('replay');
  if(!v){v=document.createElement('video');v.id='replay';v.className='replay';v.muted=true;v.autoplay=true;v.loop=true;v.playsInline=true;$('viewport').insertBefore(v,$('frame'));}
  const q=new URLSearchParams(query);q.set('job',f.job_id);const src='/api/video?'+q;
  if(v.getAttribute('src')!==src){v.src=src;try{const p=v.play();if(p&&p.catch)p.catch(()=>{});}catch{}}
  v.hidden=false;$('frame').hidden=true;$('frame-empty').hidden=true;
- $('frame-label').textContent=`LATEST REPLAY · GEN ${f.generation??0}`;return true;
+ $('frame-label').textContent=`BEST REPLAY · GEN ${f.generation??0}${f.fitness!=null?' · FITNESS '+Math.round(f.fitness):''}`;return true;
 }
 function clearFrame(){hideReplay();if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
 function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}

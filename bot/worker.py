@@ -342,7 +342,7 @@ def run_mongo(args):
                 "survival_s": r["survival_s"], "fitness": r["points"] + 5 * r["survival_s"],
                 "kills": r["diagnostics"].get("kills_est"), "worker": args.worker}
         try:
-            if uploader.upload_footage(job["job_id"], path, meta=meta):
+            if uploader.upload_footage(job["job_id"], path, meta=meta, max_w=960):  # ~1 MB, close to live quality
                 log(f"  video uploaded to MongoDB (generation {meta['generation']})")
         except Exception as e:
             log(f"  video upload failed ({type(e).__name__})")
