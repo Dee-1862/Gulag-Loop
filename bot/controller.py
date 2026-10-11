@@ -24,6 +24,20 @@ BOUNDS = {"det_conf": (0.15, 0.70), "aim_gain": (0.1, 2.0), "aim_max_step": (5, 
           "strafe_period_s": (0.5, 5.0), "reload_when_clear_at": (0, 8), "scan_turn_px": (0, 300)}
 
 
+def damage_score(frame):
+    """Red tint at the screen edges (BO1 shows blood/red when hit; the whole screen goes red near death).
+    ~1 normally, ~33 when badly hurt. HUD corners with red art are excluded."""
+    im = cv2.resize(frame, (320, 180), interpolation=cv2.INTER_AREA).astype(np.float32)
+    red = np.clip(im[..., 2] - (im[..., 1] + im[..., 0]) / 2, 0, None)
+    m = np.zeros(red.shape, bool)
+    bw = 22
+    m[:bw] = m[-bw:] = True
+    m[:, :bw] = m[:, -bw:] = True
+    m[135:, 200:] = False  # points/ammo HUD blood splat
+    m[150:, :40] = False   # round tally
+    return float(red[m].mean())
+
+
 def clamp_params(p):
     """Defensive clamp; the strategy schema already validates, but never trust input that drives the mouse."""
     out = dict(BASELINE)
@@ -143,6 +157,16 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
     last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
     first_seen_s = None
+    # damage reaction
+    dmg_base = 1.0                   # running baseline of the red score
+    dmg_frames = dmg_events = evades = 0
+    hurt_until = 0.0                 # react while recently hit
+    evade_left = 0.0                 # mouse counts of emergency turn still to do
+    evade_dir = 1
+    react_times = []                 # seconds from hit (no target) to having a target again
+    hit_unseen_t = None
+    yaw180 = 2560 * counts_per_px    # ~1280 px is ~90 deg of yaw, so 180 deg ~ 2560 px
+    next_drift = time.time() + 3.0
     last_visible_t = -1e9  # any confirmed zombie on screen (not just the target)
     sweep_t0, sweep_dir = time.time(), 1
     pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
@@ -204,6 +228,24 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             action = "SCAN"
             keys.tick(now)
 
+            dscore = damage_score(frame)
+            hit = dscore > max(6.0, 3.0 * dmg_base)
+            if not hit:
+                dmg_base = 0.98 * dmg_base + 0.02 * dscore
+            if hit:
+                dmg_frames += 1
+                if now > hurt_until:  # new hit event
+                    dmg_events += 1
+                    if tgt is None:
+                        evades += 1
+                        evade_left = yaw180
+                        # a zombie seen recently on one side is the likely attacker; else turn around
+                        evade_dir = last_seen_dir if now - last_seen_t < 3.0 else 1
+                        hit_unseen_t = now
+                hurt_until = now + 1.2
+            if tgt is not None and hit_unseen_t is not None:
+                react_times.append(now - hit_unseen_t)
+                hit_unseen_t = None
             if obs.nearest_h_frac > 0.6:
                 close_calls += 1
             if any(t.hits >= 3 and t.missed == 0 for t in obs.tracks):
@@ -247,12 +289,17 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                     action = "FIRE"
                 else:
                     action = "ENGAGE"
-                retreat = tgt.box.h > S["retreat_box_h"]
+                evade_left = 0.0  # a target is in view: stop any emergency turn
+                hurt = now < hurt_until
+                retreat = tgt.box.h > S["retreat_box_h"] or hurt
+                keys.hold("w", False)
                 keys.hold("s", retreat)
                 if retreat:
                     retreat_frames += 1
                     action = "RETREAT"
                 mode = S["strafe_mode"]
+                if hurt and mode == "none":
+                    mode = "alternate"  # being hit while fighting: don't stand still
                 if mode == "alternate":
                     mode = "left" if int(el / S["strafe_period_s"]) % 2 == 0 else "right"
                 keys.hold("a", mode == "left")
@@ -261,11 +308,26 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 no_target += 1
                 prev_err_sign = prev_tid = None
                 acquiring = None
-                for k_ in ("s", "a", "d"):
-                    keys.hold(k_, False)
+                keys.hold("s", False)
+                drifting = next_drift < now < next_drift + 0.4
+                drift_key = "a" if int(next_drift) % 2 else "d"
+                keys.hold("a", drifting and drift_key == "a")
+                keys.hold("d", drifting and drift_key == "d")
+                if now >= next_drift + 0.4:
+                    next_drift = now + 3.0  # idle drift: a 0.4 s side-step every 3 s so the bot doesn't plant
+                if evade_left > 0:  # hit by something we can't see: whip around and move away from it
+                    stepc = min(250.0, evade_left)
+                    keys.move(evade_dir * stepc, 0)
+                    evade_left -= stepc
+                    keys.hold("w", True)
+                    action = "EVADE"
+                else:
+                    keys.hold("w", now < hurt_until)  # keep moving while still being hit
                 dt = 1 / max(vp.fps, 10)
                 level = -0.25 * pitch if abs(pitch) > 2 else 0.0  # ease back to the horizon while scanning
-                if now - last_seen_t < 1.5:
+                if action == "EVADE":
+                    turn = 0.0  # the emergency turn above already moved the camera
+                elif now - last_seen_t < 1.5:
                     # just lost it: snap toward where it left the screen (it usually walked off the edge)
                     turn = last_seen_dir * max(2 * S["scan_turn_px"], 300)
                 else:
@@ -322,7 +384,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     board = None
     if game_over:  # exact numbers from the post-game table (appears a few seconds after GAME OVER)
         t_sb = time.time()
-        while time.time() - t_sb < 8 and board is None:
+        while time.time() - t_sb < 15 and board is None:
             try:
                 board = hud.scoreboard(cv2.resize(cap.grab(), (1280, 720), interpolation=cv2.INTER_AREA))
             except Exception:
@@ -365,6 +427,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "death_unseen_attacker": (t_end - last_visible_t > 2.0) if game_over else None,
         "s_since_last_zombie_seen_at_death": round(min(t_end - last_visible_t, 999), 1) if game_over else None,
         "last_5s_summary": summary,
+        "damage_frames": dmg_frames,
+        "damage_events": dmg_events,
+        "evades_from_unseen_hits": evades,
+        "avg_s_to_face_attacker": round(float(np.mean(react_times)), 2) if react_times else None,
         "loop_fps": round(n / max(survival, 1e-6), 1),
         "pointer_lock_losses": lock_losses,
     }

@@ -107,7 +107,18 @@ class Runner:
     def run(self, job):
         """Play one episode for a job. Returns a result dict in the ingest format, or None if aborted (F8)."""
         if not self.fresh:
-            self.game.start()  # reload = fresh game; assets come from cache
+            try:
+                self.game.start()  # reload = fresh game; assets come from cache
+            except Exception as e:  # browser/page gone (crash or closed window): reopen and retry once
+                log(f"game restart failed ({type(e).__name__}); reopening the browser")
+                try:
+                    self.game.close()
+                except Exception:
+                    pass
+                self.game = PortGame(self.map_id, log=log, slot=self.slot, input_mode=self.game.input_mode).open()
+                self.game.start()
+                self.cap.close()
+                self.cap = self._new_capture()
             if self.slot is not None:
                 self.cap.close()
                 self.cap = self._new_capture()
