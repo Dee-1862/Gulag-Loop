@@ -215,6 +215,8 @@ class PortGame:
 
     def canvas_region(self):
         """Physical-pixel rect of the game viewport. Uses the aligned rect once align() has run."""
+        if self.headless:  # no window: frames come from the page (screencast) at the fixed 720p viewport
+            return (0, 0, 1280, 720)
         if self._region:
             return self._region
         L, T, R, B = find_window_region(self.title)
