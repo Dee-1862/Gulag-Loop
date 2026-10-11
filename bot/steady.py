@@ -83,6 +83,9 @@ class Steady:
             return {"strategy_id": champ, "role": "champion"}
         if s["pending_confirm"]:
             return {"strategy_id": s["pending_confirm"], "role": "confirm"}
+        if s.get("pending_challenger"):  # its game was invalid (not scored): play it again
+            sid = s.pop("pending_challenger")
+            return {"strategy_id": sid, "role": "challenger"}
         persona = ROTATION[s["rotation"] % len(ROTATION)]
         s["rotation"] += 1
         parent = s["strategies"][champ]
@@ -180,10 +183,11 @@ def main():
                        "kind": job["role"], "params": st.s["strategies"][job["strategy_id"]]["params"]}
             try:
                 res = runner.run(job_doc)
-            except Exception as e:  # browser died mid-game etc.: don't score it, retry the same job
-                log(f"game failed ({type(e).__name__}: {str(e)[:80]}); not scored")
+            except Exception as e:  # browser died / mouse lost before play: don't score it, replay the same job
+                log(f"game failed ({type(e).__name__}: {str(e)[:80]}); not scored, replaying")
                 if job["role"] == "challenger":
-                    st.s["pending_confirm"] = None
+                    st.s["pending_challenger"] = job["strategy_id"]
+                st.save()
                 continue
             if res is None:
                 log("aborted (F8); stopping")

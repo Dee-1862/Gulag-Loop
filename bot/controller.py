@@ -172,6 +172,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     sweep_t0, sweep_dir = time.time(), 1
     pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
 
+    if hasattr(game, "ensure_locked") and not game.ensure_locked():
+        raise RuntimeError("could not take the mouse before the episode")  # not scored
     t0 = time.time()
     t_hud = t_frame_save = t_pub = 0.0
     frame = None
@@ -187,6 +189,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 if getattr(game, "page", None) is not None and game.page.is_closed():
                     raise RuntimeError("browser closed mid-episode")  # not a death: don't score this game
                 if not game.ensure_locked():
+                    if el < 5.0:
+                        raise RuntimeError(f"mouse lost at {el:.1f}s before play really started")  # not scored
                     # the death screen releases the mouse; a lost lock that can't be re-acquired = dead
                     game_over = True
                     log(f"[ctl] pointer lock gone at {el:.1f}s (death screen); ending episode")
