@@ -10,10 +10,12 @@ Returns points gained, survival seconds, and the §5.4 diagnostics.
 import math
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 
 import cv2
 import numpy as np
+
+from bot.scoring import classify_delta, in_head_zone, summarize as summarize_shots
 
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
                 burst_ms=120, retreat_box_h=300, strafe_mode="none", strafe_period_s=2.0,
@@ -109,6 +111,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     prev_err_sign = None
     prev_tid = None
     hits_proxy = 0
+    shot_tally = Counter()      # hits and kill types estimated from points deltas (bot/scoring.py)
+    head_fires = 0              # fire events with the crosshair on the target's head zone
     stuck_events = 0
     still_since = None
     prev_small = None
@@ -146,6 +150,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         points0 = p
                     if points is not None and p > points:
                         hits_proxy += 1
+                        shot_tally.update(classify_delta(p - points))
                     points = p
                 if int(el) % 2 == 0:
                     a = hud.read_ammo(frame)
@@ -185,6 +190,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target
                     if keys.fire(S["burst_ms"], now):
                         fires += 1
+                        if in_head_zone(tgt.box, W / 2, H / 2):
+                            head_fires += 1
                     action = "FIRE"
                 else:
                     action = "ENGAGE"
@@ -267,6 +274,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "last_5s_summary": summary,
         "loop_fps": round(n / max(survival, 1e-6), 1),
         "pointer_lock_losses": lock_losses,
+        **summarize_shots(shot_tally, head_fires, fires),
     }
     diagnostics = {k: v for k, v in diagnostics.items() if v is not None}
     return {"points": int(max(0, gained)), "survival_s": round(survival, 1), "game_over": game_over,

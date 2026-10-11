@@ -127,7 +127,11 @@ def bot_smoke(page, say, title, seconds, px_per_count, out):
     from vision.run import Recorder
     pydirectinput.FAILSAFE = False
     from vision.capture import Capture
-    vp = VisionPipeline.from_config("config.yaml", live=False)
+    import yaml
+    from common.paths import resolve_weights
+    weights = resolve_weights(yaml.safe_load(open("config.yaml"))["vision"]["weights"])
+    print("detector weights:", weights)
+    vp = VisionPipeline.from_config("config.yaml", live=False, weights=weights)
     region = canvas_region(title)
     say("BOT canvas region", region)
     cap = Capture(region, 60)

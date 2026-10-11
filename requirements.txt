@@ -10,6 +10,7 @@ keyboard
 pydirectinput-rgx
 playwright
 easyocr
+imageio-ffmpeg
 # MongoDB memory layer
 pymongo[srv]>=4.10
 python-dotenv>=1.0

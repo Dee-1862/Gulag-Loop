@@ -15,6 +15,8 @@ ACCENT = (255, 214, 64)
 WARN = (40, 186, 255)
 DANGER = (70, 60, 255)
 WHITE = (238, 238, 238)
+ZOMBIE_RED = (40, 40, 220)   # BGR
+HEAD_RED = (30, 30, 255)
 DIM = (150, 150, 150)
 DARK = (18, 14, 10)
 
@@ -181,6 +183,33 @@ class HUD:
         return f"Z-{tr.id:02d}  {int(b.conf * 100)}%  {est_distance_m(b.h, H):4.1f}m"
 
     # ---------- main ----------
+    @staticmethod
+    def red_layer(img, b, alpha):
+        """Translucent red fill + outline over a zombie's box."""
+        H, W = img.shape[:2]
+        x1, y1, x2, y2 = max(0, int(b.x1)), max(0, int(b.y1)), min(W, int(b.x2)), min(H, int(b.y2))
+        if x2 <= x1 or y2 <= y1:
+            return
+        roi = img[y1:y2, x1:x2]
+        roi[:] = cv2.addWeighted(roi, 1 - alpha, np.full_like(roi, ZOMBIE_RED), alpha, 0)
+        cv2.rectangle(img, (x1, y1), (x2 - 1, y2 - 1), ZOMBIE_RED, 1, cv2.LINE_AA)
+
+    def head_zone(self, img, b, S, aim_y_offset):
+        """Head (100 pts on a kill) vs body (60) zones on the target, and where the aim point lands."""
+        from bot.scoring import HEAD_ZONE_FRAC, HEAD_ZONE_WIDTH, KILL_POINTS
+        H, W = img.shape[:2]
+        hw = HEAD_ZONE_WIDTH * b.w / 2
+        hx1, hx2 = max(0, int(b.cx - hw)), min(W, int(b.cx + hw))
+        hy1, hy2 = max(0, int(b.y1)), min(H, int(b.y1 + HEAD_ZONE_FRAC * b.h))
+        if hx2 > hx1 and hy2 > hy1:
+            roi = img[hy1:hy2, hx1:hx2]
+            roi[:] = cv2.addWeighted(roi, 0.45, np.full_like(roi, HEAD_RED), 0.55, 0)
+            cv2.rectangle(img, (hx1, hy1), (hx2 - 1, hy2 - 1), HEAD_RED, 2, cv2.LINE_AA)
+        on_head = aim_y_offset <= HEAD_ZONE_FRAC
+        tag = f"HEAD +{KILL_POINTS['head']}" if on_head else f"BODY +{KILL_POINTS['torso']}"
+        self.text.put(img, tag, (max(0, int(b.x1) - int(84 * S)), int(b.y1 + (0 if on_head else 0.35) * b.h)),
+                      int(13 * S), HEAD_RED if on_head else WHITE, mono=True)
+
     def render(self, frame, tracks, target=None, lock_frames=0, stats=None, info=None,
                aim_y_offset=0.2, fire_radius_px=None, retreat_prox=0.45, masks=()):
         """tracks: list of tracker.Track (or anything with .id, .box, .vx, .vy, .trail).
@@ -214,6 +243,7 @@ class HUD:
                     if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 0.08 * W:
                         continue  # box resize jump, not motion
                     cv2.line(img, p0, p1, tuple(int(c * a) for c in col), 1, cv2.LINE_AA)
+            self.red_layer(img, b, 0.22 if is_tgt else 0.14)
             self.brackets(img, b.x1, b.y1, b.x2, b.y2, col, 2 if not is_tgt else 3)
             # velocity vector
             sp = math.hypot(tr.vx, tr.vy)
@@ -230,6 +260,7 @@ class HUD:
         # --- target lock ---
         if target is not None:
             b = target.box
+            self.head_zone(img, b, S, aim_y_offset)
             ax, ay = int(b.cx), int(b.y1 + aim_y_offset * b.h)
             col = DANGER if lock_frames >= 4 else WARN
             r = int(max(16 * S, 0.22 * b.w))
