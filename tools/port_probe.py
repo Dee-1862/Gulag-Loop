@@ -136,6 +136,9 @@ def bot_smoke(page, say, title, seconds, px_per_count, out):
     say("BOT canvas region", region)
     cap = Capture(region, 60)
     rec = Recorder(os.path.join(out, "bot_smoke_hud.mp4"), 1280, 720, 20)
+    if px_per_count <= 0.05 and os.path.exists("calibration.json"):  # Gate 1 estimate failed: use calibration
+        px_per_count = 1.0 / json.load(open("calibration.json"))["counts_per_px"]
+        say("BOT using calibration.json: px per count", round(px_per_count, 3))
     gain = 0.6 / px_per_count if px_per_count > 0.05 else 0.15  # counts per px of error, damped
     focus_window(title)
     t0 = time.time()
