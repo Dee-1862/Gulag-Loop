@@ -28,15 +28,14 @@ class HudReader:
         return [(t, c) for _, t, c in res]
 
     def read_points(self, frame):
-        """Smoothed points total, or the last good value if OCR misses."""
-        res = [(t, c) for t, c in self._read(frame, POINTS_BOX, "0123456789") if c > 0.3 and t.isdigit()]
-        if res:
-            val = int(max(res, key=lambda r: len(r[0]))[0])
-            # reject implausible jumps (OCR merging digits); points rarely jump > 2000 between reads
-            if self.points is None or abs(val - self.points) <= 2000 or (self.points_hist and val == self.points_hist[-1]):
-                self.points_hist.append(val)
-        if self.points_hist:
-            self.points = max(self.points_hist) if len(self.points_hist) == 3 else self.points_hist[-1]
+        """Confirmed points total: a value is accepted only after two identical consecutive reads,
+        and the total never decreases (the bot never spends). Returns the last confirmed value."""
+        res = [(t, c) for t, c in self._read(frame, POINTS_BOX, "0123456789") if c > 0.5 and t.isdigit()]
+        val = int(max(res, key=lambda r: len(r[0]))[0]) if res else None
+        if val is not None and self.points_hist and val == self.points_hist[-1]:
+            if self.points is None or (self.points <= val <= self.points + 2000):
+                self.points = val
+        self.points_hist.append(val)
         return self.points
 
     def read_ammo(self, frame):

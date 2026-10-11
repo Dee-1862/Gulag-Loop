@@ -55,7 +55,6 @@ def main():
         state = evo.initial_state()
         evo.save_state(args.state, state, create=True)
         log(f"new experiment {args.state}: 2 baseline jobs queued")
-    client, kind = make_client(args.evo_dir, args.offline)
 
     runner = Runner(args.map, args.config, max_s=args.max_s)
     try:
@@ -79,9 +78,19 @@ def main():
             if state["generation"] >= args.generations:
                 break
             t = time.time()
+            client, kind = make_client(args.evo_dir, args.offline)  # re-read .env every generation
+            if kind == "luminal":  # rehydrate per-persona cache from earlier successful proposals
+                from strategy import Proposal
+                for child in state["strategies"]:
+                    if child.get("persona") in ("Bold", "Tuner", "Defender", "Explorer") and not child.get("fallback"):
+                        client.cache[child["persona"]] = Proposal(strategy=child["params"], rationale=child["rationale"])
             state = evo.advance(state, client)
             evo.save_state(args.state, state)
             log(f"proposed generation {state['generation']} via {kind} in {time.time() - t:.1f}s")
+            for c in state["strategies"]:
+                if c.get("generation") == state["generation"]:
+                    log(f"  {c.get('persona', '?'):9s} fallback={c.get('fallback')} changed={c.get('changed_params')} "
+                        f"| {str(c.get('rationale'))[:160]}")
     finally:
         runner.close()
 

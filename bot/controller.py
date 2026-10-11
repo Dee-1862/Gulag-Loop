@@ -262,6 +262,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
     survival = min(max_s, time.time() - t0)
     gained = (points - points0) if (points is not None and points0 is not None) else 0
+    cap_pts = 130 * fires  # +10 per hit, at most +130 for a kill; no shots means no points
+    if gained > cap_pts:
+        log(f"[ctl] OCR points gain {gained} exceeds plausible {cap_pts} for {fires} shots; capping")
+        gained = cap_pts
     acts = [a[3] for a in last5]
     summary = (f"last 5s: avg {np.mean([a[1] for a in last5]) if last5 else 0:.1f} zombies visible, "
                f"nearest box {max([a[2] for a in last5], default=0):.2f} of screen height, "
