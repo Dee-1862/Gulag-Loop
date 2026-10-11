@@ -6,6 +6,9 @@ Built at c0mpiled-15, Penn State, October 11, 2026. Game: the Black Ops 1 Zombie
 
 ![HUD](docs/img/hud_acquiring.jpg)
 
+> **On-device AI plays a real game in real time; a team of Luminal agents rewrites its strategy from the evidence; MongoDB keeps every decision, run and replay.**
+> In 2 generations of real games: average survival **49.0 s → 61.8 s**, first zombie spotted **19.2 s → 9.1 s**, detections per frame **~7×**. Pitch, sponsor fit and honest limits: [MD files/PITCH.md](MD%20files/PITCH.md).
+
 ## How it works
 
 1. **On-device vision** (`vision/`) captures the game window, finds zombies with a distilled YOLO model (TensorRT, ~6 ms/frame), tracks them, and reports the aim error in pixels.

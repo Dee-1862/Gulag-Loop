@@ -326,6 +326,27 @@ def run_mongo(args):
                 continue
             time.sleep(args.wait_s)
 
+    # Episode videos go to MongoDB (GridFS 'footage', ~0.5 MB each) for the dashboard's recordings panel,
+    # tagged with generation and scores so improvement over generations can be compared and replayed.
+    import threading
+    uploader, uploads = None, []
+    try:
+        from bot.publish import Publisher
+        uploader = Publisher(args.experiment, args.map)
+    except Exception as e:
+        log(f"episode video upload disabled ({type(e).__name__})")
+
+    def upload(job, r):
+        path = os.path.join(runner.out_dir, f"{job['job_id']}.mp4") if runner.out_dir else None
+        meta = {"strategy_id": job["strategy_id"], "generation": job.get("generation", 0), "points": r["points"],
+                "survival_s": r["survival_s"], "fitness": r["points"] + 5 * r["survival_s"],
+                "kills": r["diagnostics"].get("kills_est"), "worker": args.worker}
+        try:
+            if uploader.upload_footage(job["job_id"], path, meta=meta):
+                log(f"  video uploaded to MongoDB (generation {meta['generation']})")
+        except Exception as e:
+            log(f"  video upload failed ({type(e).__name__})")
+
     runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
                     weights=args.weights, db=orch.db, experiment_id=args.experiment, live_view=args.live_view,
                     slot=args.slot, input_mode="js" if args.slot is not None else "os")
@@ -338,8 +359,14 @@ def run_mongo(args):
                 break
             orch.complete_job(r)
             log("  stored in MongoDB")
+            if uploader:  # re-encode + upload while the next game loads
+                th = threading.Thread(target=upload, args=(job, r), daemon=True)
+                th.start()
+                uploads.append(th)
     finally:
         runner.close()
+        for th in uploads:
+            th.join(timeout=180)
 
 
 if __name__ == "__main__":
