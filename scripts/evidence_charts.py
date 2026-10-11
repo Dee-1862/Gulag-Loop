@@ -65,5 +65,30 @@ def main():
     print("wrote", out)
 
 
+def over_time(exp="exp-kino-2"):
+    """Perception and survival per generation: what changes as the agents iterate."""
+    rows = list(get_db()[RUNS].find({"experiment_id": exp}, {"generation": 1, "survival_s": 1, "diagnostics": 1}))
+    spec = [("survival_s", "Average survival (s)", lambda r: r.get("survival_s")),
+            ("seen", "First zombie seen (s, lower is better)", lambda r: (r.get("diagnostics") or {}).get("first_zombie_seen_s")),
+            ("det", "Zombies detected per frame", lambda r: (r.get("diagnostics") or {}).get("det_count_avg"))]
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.6))
+    for ax, (_, title, get) in zip(axes, spec):
+        gens = sorted({r.get("generation") or 0 for r in rows})
+        means = [statistics.mean(v for r in rows if (r.get("generation") or 0) == g and (v := get(r)) is not None) for g in gens]
+        ax.plot(gens, means, color="#d9480f", marker="o", lw=2)
+        for g, m in zip(gens, means):
+            ax.annotate(f"{m:.2f}" if m < 5 else f"{m:.1f}", (g, m), textcoords="offset points", xytext=(0, 8), ha="center", fontsize=9)
+        ax.set_xticks(gens)
+        ax.set_xlabel("generation")
+        ax.set_title(title, fontsize=10)
+        ax.margins(y=0.25)
+    fig.suptitle(f"{exp}: three generations of agent iteration", fontsize=11)
+    fig.tight_layout()
+    out = ROOT / "docs" / "img" / "improvement_over_time.png"
+    fig.savefig(out, dpi=130)
+    print("wrote", out)
+
+
 if __name__ == "__main__":
     main()
+    over_time()

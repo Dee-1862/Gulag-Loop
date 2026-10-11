@@ -2,6 +2,8 @@
 
 **An on-device AI plays Call of Duty: Black Ops Zombies in real time. A team of Luminal agents rewrites its strategy between games. MongoDB remembers everything.**
 
+**Live dashboard:** [zombieloop-dashboard.onrender.com](https://zombieloop-dashboard.onrender.com/) (read-only; shows the live game when the game laptop is online, otherwise the recorded games)
+
 Built at c0mpiled-15, Penn State, October 11, 2026. The game is the Black Ops 1 Zombies browser port ([vel.gg/bo1z](https://vel.gg/bo1z/kino), unofficial fan port), map Kino der Toten.
 
 ![HUD](docs/img/hud_acquiring.jpg)
@@ -79,6 +81,14 @@ Cloud services are used only between games, and the system degrades gracefully: 
 
 Not done yet: INT8 quantization. The benchmark script exists (`scripts/compress_model.py`) but has not been run, so we do not claim a quantized model.
 
+### The dataset
+
+We collected and edited the training images ourselves: more than 500 hand-checked frames in the first pass, growing to **2,629 labeled frames** (2,469 from original-game footage and 160 captured from the browser port).
+
+- **Collected:** gameplay frames sampled every 0.25 s from footage, plus frames the bot saves from the browser port during real games (over 1,700 raw port frames so far).
+- **Edited:** the player's own hand and weapon, the round tally and the points and ammo HUD are painted black so the model learns zombies, not the interface. Wide boxes (corpses) are filtered out, and labels from the large teacher model are reviewed before training.
+- **Split:** a whole clip is held out for validation, so validation frames are not near-copies of training frames.
+
 Details: [MD files/VISION.md](MD%20files/VISION.md).
 
 ## Luminal agents
@@ -150,6 +160,25 @@ Real games, read from MongoDB (experiment `exp-kino-2`):
 Luminal: 9 agent calls, 8 valid on the first try, 0 fallbacks.
 
 The best strategy found by the team so far is "Aggressive" in experiment `rishit-kino_v6` (mean fitness 481 over 2 games). New dashboard runs are seeded from it automatically. Recorded games from that experiment are what the dashboard replays when nothing is live, including the first iteration (0 kills) for comparison.
+
+![Survival, first sighting and detections per generation](docs/img/improvement_over_time.png)
+
+It gets better as the agents iterate, and this is with very few iterations: three generations and a handful of games each. The agents found that the bot was spending most of its time with nothing in view, lowered the detection threshold, and perception improved in the next generation.
+
+### Zero kills versus four kills
+
+The first game of the `rishit-kino_v6` experiment, before any learning, against a later game from the same experiment. Frames are sampled evenly across each game.
+
+![First iteration with 0 kills against a later iteration with 4 kills](docs/img/zero_vs_four_kills.jpg)
+
+| | First iteration | Later iteration |
+| --- | --- | --- |
+| Kills | 0 | 4 |
+| Fitness | 164 | 384 |
+| Survival | 33 s | 49 s |
+| Points counter at the end | 470 (lost points) | 640 (gained points) |
+
+In the dashboard, the viewport replays these recordings when nothing is live. The "Show first" button switches between the best game and the first iteration so you can compare them yourself. Early results from small samples: the trend is encouraging, the numbers are not yet statistically firm.
 
 More: [MD files/PITCH.md](MD%20files/PITCH.md).
 
