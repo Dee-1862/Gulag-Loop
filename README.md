@@ -1,5 +1,7 @@
 # Luminal strategy generation
 
+For teammate integration, start with [TEAMMATE_HANDOFF.md](TEAMMATE_HANDOFF.md).
+
 Run commands from this directory. Credentials stay in the ignored `.env` file.
 
 ```sh
