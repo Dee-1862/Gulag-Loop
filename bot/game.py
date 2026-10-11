@@ -9,6 +9,7 @@ import ctypes
 import ctypes.wintypes as wt
 import time
 
+from common.paths import data_path
 from vision.capture import find_window_region  # also makes this process DPI-aware
 
 user32 = ctypes.windll.user32
@@ -54,9 +55,9 @@ def is_foreground(title_substr):
 
 
 class PortGame:
-    def __init__(self, map_id="kino", profile="D:/czb/chrome-profile", log=print):
+    def __init__(self, map_id="kino", profile=None, log=print):
         self.map_id = map_id
-        self.profile = profile
+        self.profile = profile or data_path("chrome-profile", "")
         self.log = log
         self._pw = self._ctx = self.page = None
         self.title = None

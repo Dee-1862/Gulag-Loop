@@ -50,7 +50,7 @@ flowchart LR
 | MongoDB orchestration + memory | Deekshith | `mongo_orchestrator.py`, `common/`, `scripts/` | Built. 13 offline + 15 live end-to-end checks pass |
 | Browser game driver | Rishit | `bot/game.py`, `tools/port_probe.py` | Built. Isolated Chrome on the dGPU, load/start/restart, pointer lock. **Gate 1 passes** (scripted mouse turns the camera) |
 | Controller: mouse + keyboard | Rishit | `bot/controller.py` | Built. Executes all 12 strategy params, F8 abort, computes §5.4 diagnostics. **Gate 2 passes** (first autonomous kill on the port) |
-| Worker: job → run → result | Rishit | `bot/worker.py` | Built. Calibrates mouse sensitivity, runs 180 s episodes |
+| Worker: job → run → result | Rishit, Deekshith | `bot/worker.py` | Built. Calibrates mouse sensitivity, runs 180 s episodes; claims jobs from MongoDB and auto-proposes generations |
 | Points OCR + game-over detection | Rishit | `bot/hudread.py` | Built (easyocr on fixed 720p crops) |
 | Dashboard | — | — | **Not built** (data and queries exist: `leaderboard()`, `playbook_lineage()`) |
 
@@ -85,7 +85,19 @@ copy .env.example .env          # fill in MONGODB_URI and LUMINAL_API_KEY
 
 The vision side needs CUDA PyTorch and TensorRT first; follow [MD files/VISION.md](MD%20files/VISION.md#setup-windows--nvidia-gpu).
 
-## Run the evolution loop on MongoDB
+## Run everything (game laptop)
+
+```bash
+python mongo_orchestrator.py --experiment exp-kino-1 init --map kino          # once
+python -m bot.worker calibrate                                                 # once per machine
+python -m bot.worker run --experiment exp-kino-1 --propose --generations 8     # plays, stores, evolves
+```
+
+The worker opens the game in its own Chrome, claims a job from MongoDB, plays a 180 s episode with that strategy, stores the run, and repeats. With `--propose`, when the queue is empty it asks Luminal for the next generation itself. Extra laptops run the same command without `--propose` and share the queue. **The mouse belongs to the game while it runs: F8 aborts (the job goes back in the queue), Esc in game releases the mouse.**
+
+Detector weights: `config.yaml` first, else `model/zombies_v1.engine` or `model/zombies_v1.pt` (gitignored). Large local files go to `D:/czb` if it exists, else `local_data/` (override with `CZB_DIR`).
+
+## Run the evolution loop on MongoDB (manual steps)
 
 ```bash
 python mongo_orchestrator.py --experiment exp-kino-1 init --map kino
@@ -93,6 +105,7 @@ python mongo_orchestrator.py --experiment exp-kino-1 claim --worker laptop-1   #
 python mongo_orchestrator.py --experiment exp-kino-1 complete --result result.json
 python mongo_orchestrator.py --experiment exp-kino-1 propose                   # calls Luminal (--dry-run to preview)
 python mongo_orchestrator.py --experiment exp-kino-1 status
+python mongo_orchestrator.py --experiment exp-kino-1 requeue --minutes 10      # jobs from a crashed worker
 ```
 
 A result is `{"job_id", "strategy_id", "worker", "map", "points", "survival_s", "diagnostics"}`; fitness is `points + 5 × survival_s`.
@@ -116,6 +129,9 @@ The memory collections (`episodes`, `lessons`, `situations`, `hud_states`, `work
 | `python scripts/smoke_test.py` | Memory layer: vector search, retrieval scoring, lesson lifecycle | MongoDB |
 | `python scripts/test_mongo_luminal.py` | Full loop on MongoDB with mock agents | MongoDB |
 | `python scripts/test_mongo_luminal.py --live` | Same, generation 1 from real Luminal agents (billable) | MongoDB + Luminal |
+| `python scripts/test_worker_mongo.py` | Real `bot/worker.py` loop on MongoDB with game, vision and mouse faked: claim, F8 requeue, store, auto-propose 2 generations | MongoDB |
+| `python scripts/test_worker_mongo.py --live` | Same, proposals from real Luminal | MongoDB + Luminal |
+| `python -m tools.port_probe --map kino --gate1 --bot-seconds 60` | Real game: Gate 1 + 60 s of bot (**takes the mouse**) | game |
 | `python test_luminal.py --live` | One Luminal proposal | Luminal |
 
 All run results in these tests are synthetic; they prove the plumbing, not gameplay improvement.

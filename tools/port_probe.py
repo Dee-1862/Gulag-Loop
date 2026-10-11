@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from playwright.sync_api import sync_playwright
 
+from common.paths import data_path
 from vision.capture import find_window_region
 
 user32 = __import__("ctypes").windll.user32
@@ -109,8 +110,8 @@ def gate1(page, say, title, counts=80, reps=3):
         b = grab(page)
         res["sendinput"].append(shift_px(a, b))
         if r == 0:
-            cv2.imwrite("D:/czb/port/gate1_before.png", a)
-            cv2.imwrite("D:/czb/port/gate1_after.png", b)
+            cv2.imwrite(data_path("port", "gate1_before.png"), a)
+            cv2.imwrite(data_path("port", "gate1_after.png"), b)
         for _ in range(4):
             pydirectinput.moveRel(-counts // 4, 0, relative=True, disable_mouse_acceleration=True); time.sleep(0.02)
         time.sleep(0.4)
@@ -177,13 +178,13 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--load-timeout", type=float, default=600)
     ap.add_argument("--play-seconds", type=float, default=60)
-    ap.add_argument("--profile", default="D:/czb/chrome-profile")
+    ap.add_argument("--profile", default=data_path("chrome-profile", ""))
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--gate1", action="store_true", help="test whether mouse input turns the camera")
     ap.add_argument("--title", default="Kino der Toten")
     ap.add_argument("--bot-seconds", type=float, default=0)
     args = ap.parse_args()
-    out = args.out or f"D:/czb/port/{args.map}"
+    out = args.out or data_path("port", args.map, "")
     os.makedirs(out, exist_ok=True)
     log = open(os.path.join(out, "probe.log"), "w", encoding="utf-8")
 

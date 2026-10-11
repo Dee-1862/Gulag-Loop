@@ -9,10 +9,11 @@ from Atlas, persists what advance() adds, and gives workers an atomic job queue.
     python mongo_orchestrator.py --experiment exp-kino-1 complete --result result.json
     python mongo_orchestrator.py --experiment exp-kino-1 propose [--dry-run]
     python mongo_orchestrator.py --experiment exp-kino-1 status
+    python mongo_orchestrator.py --experiment exp-kino-1 requeue --minutes 10
 """
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pymongo import ReturnDocument
@@ -101,6 +102,19 @@ class MongoOrchestrator:
         params = self.db[PLAYBOOKS].find_one({"_id": job["strategy_id"]}, {"params": 1})["params"]
         return {"job_id": job["job_id"], "strategy_id": job["strategy_id"], "generation": job["generation"],
                 "kind": job["kind"], "params": params}
+
+    def release_job(self, job_id, worker):
+        """Put a job this worker claimed back in the queue (F8 abort)."""
+        return self.db[JOBS].update_one(
+            {"_id": job_id, "experiment_id": self.experiment_id, "status": "running", "worker": worker},
+            {"$set": {"status": "queued"}, "$unset": {"worker": "", "claimed_at": ""}}).modified_count == 1
+
+    def requeue_stale(self, minutes):
+        """Requeue jobs whose worker crashed: running for longer than `minutes`."""
+        cutoff = _now() - timedelta(minutes=minutes)
+        return self.db[JOBS].update_many(
+            {"experiment_id": self.experiment_id, "status": "running", "claimed_at": {"$lt": cutoff}},
+            {"$set": {"status": "queued"}, "$unset": {"worker": "", "claimed_at": ""}}).modified_count
 
     def complete_job(self, result):
         """Store one run result and close its job, in one transaction. Exact replays are no-ops."""
@@ -217,6 +231,8 @@ def main():
     propose = sub.add_parser("propose")
     propose.add_argument("--dry-run", action="store_true")
     sub.add_parser("status")
+    requeue = sub.add_parser("requeue", help="put jobs stuck in 'running' back in the queue")
+    requeue.add_argument("--minutes", type=float, default=10)
     args = p.parse_args()
 
     orch = MongoOrchestrator(args.experiment)
@@ -239,6 +255,8 @@ def main():
         out = orch.propose(client)
         print(f"Generation {out['generation']} saved: {len(out['children'])} children, "
               f"{len(out['jobs'])} jobs queued, {len(out['llm_calls'])} Luminal calls logged.")
+    elif args.command == "requeue":
+        print(f"requeued {orch.requeue_stale(args.minutes)} stale jobs")
     elif args.command == "status":
         print(json.dumps(orch.status(), indent=2, default=str))
 

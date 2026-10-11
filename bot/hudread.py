@@ -14,8 +14,10 @@ GAME_OVER_BOX = (250, 140, 1030, 330)   # "GAME OVER / You Survived N Rounds", t
 
 
 class HudReader:
-    def __init__(self, model_dir="D:/czb/models/easyocr"):
+    def __init__(self, model_dir=None):
         import easyocr
+        from common.paths import data_path
+        model_dir = model_dir or data_path("models", "easyocr", "")
         self.ocr = easyocr.Reader(["en"], gpu=True, model_storage_directory=model_dir, verbose=False)
         self.points_hist = deque(maxlen=3)
         self.points = None

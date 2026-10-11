@@ -1,6 +1,7 @@
 .gyst/
 .agents/
 .claude/
+model/
 .venv/
 .env
 .env.*
@@ -17,3 +18,4 @@ runs/
 *.mp4
 *.whl
 calibration.json
+local_data/
