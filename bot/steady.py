@@ -29,6 +29,8 @@ def fitness(r):
 
 
 class Steady:
+    memory = None  # bot.agent_memory.AgentMemory when MongoDB is available
+
     def __init__(self, path, seed_from=None, seed_id="baseline"):
         self.path = path
         if os.path.exists(path):
@@ -90,6 +92,13 @@ class Steady:
         s["rotation"] += 1
         parent = s["strategies"][champ]
         hist = [{"iter": h["iter"], "champion_mean": h["champion_mean"]} for h in s["champion_history"][-6:]]
+        mem_ref = None
+        if self.memory is not None:  # MongoDB Vector Search + lessons -> the agent's context
+            last = [r for r in s["runs"] if r["strategy_id"] == champ][-1]
+            ctx, mem_ref = self.memory.context_for(champ, last["diagnostics"], last["survival_s"], last["points"])
+            hist = hist + [ctx]
+            log(f"iter {it}: memory -> situation '{ctx['current_situation']}', {len(ctx['similar_past_games'])} similar "
+                f"games (sim {[g['similarity'] for g in ctx['similar_past_games']]}), {len(ctx['lessons'])} lessons")
         t = time.time()
         out = client.generate(parent["params"], self.last_diag(champ), persona=persona, generation=it,
                               parent_id=champ, fitness=round(self.champ_mean(), 1), history=hist)
@@ -98,6 +107,8 @@ class Steady:
         child["generation"] = it
         child["changed_params"] = child.get("changed_params") or [
             k for k in child["params"] if child["params"][k] != parent["params"].get(k)]
+        if mem_ref is not None:
+            child["memory_context"] = mem_ref
         s["strategies"][child["_id"]] = child
         for c in out.get("llm_calls", []):
             s["llm_calls"].append({**c, "generation": it})
@@ -113,6 +124,15 @@ class Steady:
         sid, champ = job["strategy_id"], s["champion_id"]
         cm = self.champ_mean()
         f = fitness(result)
+        c = s["strategies"][sid]
+        parent = s["strategies"].get((c.get("parent_ids") or [None])[0])
+        if self.memory is not None:
+            try:
+                self.memory.record_episode(result["job_id"], sid, c.get("persona"), c["params"],
+                                           parent["params"] if parent else None, result, job["role"],
+                                           cm if job["role"] != "champion" else None)
+            except Exception as e:
+                log(f"[memory] episode write failed: {type(e).__name__}")
         verdict = ""
         if job["role"] == "challenger":
             if f > cm:
@@ -126,10 +146,23 @@ class Steady:
             if m > cm:
                 s["champion_id"] = sid
                 verdict = f"CONFIRMED: 2-game mean {m:.0f} > {cm:.0f} -> NEW CHAMPION"
+                if self.memory is not None and parent:
+                    try:
+                        changed = {k: [parent["params"].get(k), v] for k, v in c["params"].items()
+                                   if parent["params"].get(k) != v}
+                        sit = (c.get("memory_context") or {}).get("situation") or "engaged"
+                        self.memory.add_lesson(sid, c.get("persona"), changed, sit, m, cm, 2)
+                    except Exception as e:
+                        log(f"[memory] lesson write failed: {type(e).__name__}")
             else:
                 verdict = f"not confirmed: 2-game mean {m:.0f} <= {cm:.0f}"
         else:
             verdict = f"champion re-evaluated -> mean {self.champ_mean():.0f} over {len(self.evals(champ))} games"
+            if self.memory is not None and job["role"] == "champion":
+                try:
+                    self.memory.judge_lessons(champ, self.champ_mean(), None)
+                except Exception as e:
+                    log(f"[memory] lesson judging failed: {type(e).__name__}: {str(e)[:80]}")
         self._log_champion()
         self.save()
         log(f"iter {s['iter']} [{job['role']}] {sid[:12]}: fitness {f:.0f} (+{result['points']} pts, "
@@ -160,6 +193,9 @@ def main():
     ap.add_argument("--map", default="kino")
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--no-memory", action="store_true", help="disable MongoDB agent memory (Vector Search, lessons)")
+    ap.add_argument("--memory-seed", nargs="*", default=[_p("evo_state", "kino_v6.json")],
+                    help="earlier experiment states to backfill into episodic memory")
     args = ap.parse_args()
 
     sys.path.insert(0, os.path.abspath(args.evo_dir))
@@ -173,6 +209,17 @@ def main():
         from bot.publish import Publisher
         pub = Publisher(st.s["experiment"], args.map, notes="steady-state champion/challenger evolution (bot/steady.py)")
         pub.sync_state(st.as_evo_state())
+        if not args.no_memory:
+            from bot.agent_memory import AgentMemory
+            st.memory = AgentMemory(pub.db, st.s["experiment"], log=log)
+            pub.memory = st.memory  # heartbeats also land in the hud_states time series
+            if st.memory.db.episodes.count_documents({"arm": st.memory.arm}) == 0:
+                prev = [x for x in args.memory_seed if os.path.exists(x)]
+                old_steady = _p("evo_state", "steady.json")
+                steady_prev = None
+                if os.path.exists(old_steady) and os.path.abspath(old_steady) != os.path.abspath(args.state):
+                    steady_prev = json.load(open(old_steady))
+                st.memory.backfill(steady_prev, prev)
     runner = Runner(args.map, max_s=args.max_s, publisher=pub)
     t_end = time.time() + args.minutes * 60
     try:
