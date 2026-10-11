@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def configuration():
     values={}
     path=ROOT/'.env'
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        pass  # Keep the dependency-free demo available before setup.
+    else:
+        return {**dotenv_values(path), **os.environ}
     if path.exists():
         for line in path.read_text().splitlines():
             if '=' in line and not line.lstrip().startswith('#'):
@@ -89,7 +95,7 @@ def handler_for(backend):
                 elif url.path=='/api/snapshot':
                     self.send(backend.snapshot(experiment,demo))
                 elif url.path=='/api/frame':
-                    frame=backend.live.frame(experiment) if backend.live and not demo else None
+                    frame=backend.live.frame(experiment, args.get('worker',[''])[0], args.get('job',[''])[0]) if backend.live and not demo else None
                     self.send(frame or b'', 'image/jpeg', 200 if frame else 204)
                 else:
                     self.send(dict(error='Not found'),status=404)

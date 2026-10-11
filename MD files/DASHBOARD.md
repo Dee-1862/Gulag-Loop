@@ -60,7 +60,9 @@ stays available without a database connection. Arrows describe implemented code
 paths, not measured network transfers, and highlighting follows your selection.
 Parent selection and validation have no independent heartbeat; they are labeled
 as code paths rather than shown as actively running. Validation is grouped visually
-but happens inside each persona's client call. The storage-to-queue arrow represents
+but happens inside each persona's client call. After failed attempts, the client
+reuses a compatible cached proposal or generates a local mutation of the parent;
+the dashboard identifies these as fallbacks. The storage-to-queue arrow represents
 the orchestrator's transaction, not a MongoDB trigger. For a synthetic preview,
 open http://127.0.0.1:8765/?mode=demo#flow.
 
@@ -68,6 +70,9 @@ open http://127.0.0.1:8765/?mode=demo#flow.
 Luminal calls, database writes, or work in Codex. Use the worker's F8 abort to stop
 an active game episode, and the terminal running the orchestrator to stop that
 process. Refresh can manually fetch a snapshot while the dashboard is paused.
+Pausing also discards requests already in flight. Switching data source or
+experiment discards earlier responses so they cannot overwrite the selected view.
+The footer shows the snapshot time, rather than the time you pressed Pause.
 
 ## Live instrumentation
 
@@ -98,6 +103,10 @@ A running worker heartbeat older than 12 seconds becomes **stale**; a pending ag
 signal older than 240 seconds becomes **stale**. Missing signals mean waiting, not
 proof that a process is alive. Frames are hidden when no recent running worker is
 observed. Terminal worker states remain complete/aborted/stopped.
+The viewport follows the most recently updated running worker (or most recent
+worker if none is running). Its image is fetched for that worker and job only;
+missing images are not labeled live. Elapsed time is shown without assuming a
+fixed episode duration.
 
 ## Local endpoints and verification
 
@@ -107,13 +116,26 @@ exposed publicly without an authenticated reverse proxy.
 
 - `GET /api/experiments`: experiments using the bot schema.
 - `GET /api/snapshot?experiment=ID&mode=live`: sanitized, experiment-scoped snapshot.
-- `GET /api/frame?experiment=ID&mode=live`: recent JPEG or HTTP 204.
+- `GET /api/frame?experiment=ID&mode=live&worker=IDENTITY&job=JOB_ID`: the selected
+  running worker's recent JPEG or HTTP 204. Worker identity is required; supplying
+  the job ID prevents a newer episode's frame from appearing with older statistics.
 - `mode=demo` on snapshot requests: explicitly labeled synthetic data.
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 node --check dashboard/app.js
 ```
+
+Optional interface regression checks use jsdom outside the project (no frontend
+runtime dependency):
+
+```sh
+npm install --prefix /tmp/zombieloop-dashboard-tests --no-save jsdom
+NODE_PATH=/tmp/zombieloop-dashboard-tests/node_modules node --test tests/dashboard_ui.cjs
+```
+
+These check late responses during source changes and pausing, worker/frame matching,
+missing-image and fallback labels, all graph arrow endpoints, and tab/graph controls.
 
 Tests cover freshness, fallback states, statistics, frame exclusion, demo isolation,
 per-persona monitoring documents, and nonfatal database failures. Browser preview

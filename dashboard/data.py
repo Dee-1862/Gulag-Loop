@@ -36,6 +36,7 @@ def assemble(experiment, jobs, runs, calls, playbooks, signals, counts, now=None
     pb = {str(p['_id']): p for p in playbooks}
     statuses = Counter(j.get('status', 'unknown') for j in jobs)
     worker_signals = [s for s in signals if s.get('component') == 'vision']
+    worker_signals.sort(key=lambda s: age(s.get('updated_at'), now) if age(s.get('updated_at'), now) is not None else float('inf'))
     workers = []
     for signal in worker_signals:
         seconds = age(signal.get('updated_at'), now)
@@ -50,22 +51,30 @@ def assemble(experiment, jobs, runs, calls, playbooks, signals, counts, now=None
         signal = next((s for s in signals if s.get('component') == 'luminal' and s.get('persona') == persona), None)
         latest_call = next((c for c in calls if c.get('persona') == persona), None)
         latest_pb = next((p for p in playbooks if p.get('persona') == persona), None)
+        latest = latest_pb or latest_call or {}
+        if latest_call and latest_call.get('generation', 0) > latest.get('generation', 0):
+            latest = latest_call
         state = 'waiting'
-        if latest_pb:
+        if latest is latest_pb:
             state = 'fallback' if latest_pb.get('fallback') else 'complete'
-        elif latest_call:
+        elif latest is latest_call:
             state = 'complete' if latest_call.get('ok') else 'error'
         signal_time = age(signal.get('updated_at'), now) if signal else None
         # Ignore old progress documents when a newer saved generation exists.
-        if signal and signal.get('generation', 0) >= (latest_pb or {}).get('generation', 0):
+        saved_age = age(latest.get('created_at'), now)
+        if signal and (signal.get('generation', 0) > latest.get('generation', 0) or
+                       (signal.get('generation', 0) == latest.get('generation', 0) and
+                        (saved_age is None or (signal_time is not None and signal_time <= saved_age)))):
+            latest = signal
             state = signal.get('state', state)
             if state in ('running', 'retrying') and (signal_time is None or signal_time > 240):
                 state = 'stale'
-        agents.append(dict(persona=persona, state=state, generation=(signal or latest_pb or latest_call or {}).get('generation'),
-            attempt=(signal or latest_call or {}).get('attempt'), latency_ms=(latest_call or {}).get('latency_ms'),
+        agents.append(dict(persona=persona, state=state, generation=latest.get('generation'),
+            attempt=latest.get('attempt', (latest_call or {}).get('attempt')), latency_ms=(latest_call or {}).get('latency_ms'),
             tokens=((latest_call or {}).get('tokens') or {}).get('total_tokens'),
             rationale=(latest_pb or {}).get('rationale'), changed_params=(latest_pb or {}).get('changed_params', []),
-            updated_at=iso((signal or latest_call or {}).get('updated_at', (latest_call or {}).get('created_at')))))
+            fallback_source=(latest_pb or {}).get('fallback_source'),
+            updated_at=iso(latest.get('updated_at', latest.get('created_at')))))
     groups = defaultdict(list)
     for r in runs:
         groups[r.get('strategy_id')].append(r.get('fitness', 0))
@@ -115,18 +124,24 @@ class MongoSource:
             # Explicit projections prevent unrelated fields/credentials from reaching the browser.
             jobs = list(self.db.jobs.find(q, {k:1 for k in ('job_id','strategy_id','generation','kind','status','worker','created_at','claimed_at','completed_at')}).sort('created_at', -1).limit(500))
             runs = list(self.db.runs.find(q, {k:1 for k in ('job_id','strategy_id','generation','worker','points','survival_s','fitness','diagnostics','completed_at')}).sort('completed_at', -1).limit(500))
-            calls = list(self.db.llm_calls.find(q, {k:1 for k in ('persona','model','generation','strategy_id','ok','tokens','latency_ms','created_at')}).sort('created_at', -1).limit(200))
-            playbooks = list(self.db.playbooks.find(q, {k:1 for k in ('persona','generation','rationale','changed_params','fallback')}).sort('generation', -1).limit(500))
-            signals = list(self.db.dashboard_status.find(q, {k:1 for k in ('component','identity','worker','state','persona','generation','attempt','updated_at','fps','detections','action','points','elapsed_s','job_id')}).limit(50))
+            calls = list(self.db.llm_calls.find(q, {k:1 for k in ('persona','model','generation','strategy_id','ok','attempt','tokens','latency_ms','created_at')}).sort('created_at', -1).limit(200))
+            playbooks = list(self.db.playbooks.find(q, {k:1 for k in ('persona','generation','rationale','changed_params','fallback','fallback_source','created_at')}).sort('generation', -1).limit(500))
+            signals = list(self.db.dashboard_status.find(q, {k:1 for k in ('component','identity','worker','state','persona','generation','attempt','updated_at','fps','detections','action','points','elapsed_s','job_id')}).sort('updated_at', -1).limit(50))
             counts = {c: self.db[c].count_documents(q) for c in ('jobs','runs','playbooks','llm_calls')}
             result = assemble(exp, jobs, runs, calls, playbooks, signals, counts)
             result['jobs'] = {r['_id']: r['count'] for r in self.db.jobs.aggregate([
                 {'$match': q}, {'$group': {'_id': '$status', 'count': {'$sum': 1}}}])}
             return result
 
-    def frame(self, experiment_id):
+    def frame(self, experiment_id, identity='', job_id=''):
         import base64
-        doc = self.db.dashboard_status.find_one({'experiment_id': experiment_id, 'component': 'vision', 'frame': {'$exists': True}}, {'frame':1,'updated_at':1}, sort=[('updated_at', -1)])
+        if not identity:
+            return None
+        query = {'experiment_id': experiment_id, 'component': 'vision', 'identity': identity,
+                 'state': 'running', 'frame': {'$exists': True}}
+        if job_id:
+            query['job_id'] = job_id
+        doc = self.db.dashboard_status.find_one(query, {'frame':1,'updated_at':1}, sort=[('updated_at', -1)])
         seconds = age(doc.get('updated_at'), datetime.now(timezone.utc)) if doc else None
         if seconds is not None and seconds < 12:
             return base64.b64decode(doc['frame'], validate=True)

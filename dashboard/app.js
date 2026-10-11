@@ -2,10 +2,11 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
 const roles={Bold:['↗','Larger changes. Faster exploration.'],Tuner:['≋','Small adjustments. Precise control.'],Defender:['◇','Survival first. Create space.'],Explorer:['⌖','New targets. Different movement.']};
+let snapshotRequest=null,listRequest=null,requestVersion=0,listVersion=0,listing=false,receivedAt=null;
 let snapshot=null,paused=false,loading=false,filter='all',blobURL=null,selectedPersona=null;
 function params(){return new URLSearchParams({mode:$('mode').value,experiment:$('experiment').value});}
 function badge(id,text,active){$(id).textContent=text;$(id).parentElement.classList.toggle('active',Boolean(active));}
-function ageLabel(value){if(!value)return '—';const seconds=Math.max(0,Math.round((Date.now()-new Date(value).getTime())/1000));return seconds<60?`${seconds}s ago`:`${Math.floor(seconds/60)}m ago`;}
+function ageLabel(value){if(!value||!Number.isFinite(new Date(value).getTime()))return '—';const seconds=Math.max(0,Math.round((Date.now()-new Date(value).getTime())/1000));return seconds<60?`${seconds}s ago`:`${Math.floor(seconds/60)}m ago`;}
 function showNotice(text){$('notice').hidden=!text;$('notice').textContent=text||'';}
 function agents(items=[]){
  $('agents').innerHTML=Object.entries(roles).map(([name,[icon,role]])=>{const a=items.find(x=>x.persona===name)||{state:'waiting'};return `<button class="agent-card ${esc(a.state)}" data-persona="${name}" aria-label="Inspect ${name} agent"><div class="agent-top"><span class="agent-icon">${icon}</span><span class="agent-state">${esc(a.state)}</span></div><h3>${name}</h3><p>${role}</p><div class="agent-meta"><span>${a.latency_ms!=null?(a.latency_ms/1000).toFixed(1)+'s last call':'Awaiting call'}</span><b>${a.generation!=null?'GEN '+String(a.generation).padStart(2,'0'):'—'} ↗</b></div></button>`}).join('');
@@ -23,60 +24,112 @@ function drawChart(rows=[]){
 }
 function events(){let list=snapshot?.events||[];if(filter==='mongo')list=list.filter(e=>e.kind!=='llm');if(filter==='llm')list=list.filter(e=>e.kind==='llm');$('events').innerHTML=list.length?list.slice(0,7).map(e=>`<div class="event-row"><span><i class="event-dot ${esc(e.kind)}"></i>${esc(e.title)}</span><span>${esc(e.detail)}</span><span>${esc(e.collection)}</span><span title="${esc(e.at)}">${ageLabel(e.at)}</span></div>`).join(''):'<p class="empty">No matching activity recorded.</p>';}
 function clearFrame(){if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
-async function updateFrame(data){
+function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}
+function cancelListing(){listVersion++;listRequest?.abort();listRequest=null;listing=false;}
+function currentRequest(version,query){return version===requestVersion&&query.toString()===params().toString();}
+async function updateFrame(data,query,version,signal){
  const active=data.workers?.find(w=>w.state==='running');
- if(data.mode==='demo'){$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
- $('frame-label').textContent=active?'LIVE · 2s CAPTURE':'NO LIVE FRAME';
+ if(data.mode==='demo'){clearFrame();$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
+ $('frame-label').textContent='NO LIVE FRAME';
  if(!active){clearFrame();return;}
- try{const r=await fetch('/api/frame?'+params());if(!r.ok||r.status===204){clearFrame();return;}const b=await r.blob();if(blobURL)URL.revokeObjectURL(blobURL);blobURL=URL.createObjectURL(b);$('frame').src=blobURL;$('frame').hidden=false;$('frame-empty').hidden=true;}catch{clearFrame();}
+ const frameQuery=new URLSearchParams(query);frameQuery.set('worker',active.identity||active.worker||'');
+ if(active.job_id)frameQuery.set('job',active.job_id);
+ try{
+  const r=await fetch('/api/frame?'+frameQuery,{signal});
+  if(!currentRequest(version,query))return;
+  if(!r.ok||r.status===204){clearFrame();return;}
+  const b=await r.blob();if(!currentRequest(version,query))return;
+  clearFrame();blobURL=URL.createObjectURL(b);$('frame').src=blobURL;$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='LIVE · 2s CAPTURE';
+ }catch{if(currentRequest(version,query)){clearFrame();$('frame-label').textContent='FRAME UNAVAILABLE';}}
 }
-function render(data){snapshot=data;const ready=data.connected&&data.experiment;const demo=data.mode==='demo';
- $('connection').className='pill '+(demo?'demo':ready?'connected':'');$('connection').innerHTML=`<i></i>${paused?'PAUSED':demo?'DEMO PREVIEW':ready?'BACKEND CONNECTED':'AWAITING BACKEND'}`;
+function render(data){snapshot=data;const connected=Boolean(data.connected);const ready=connected&&data.experiment;const demo=data.mode==='demo';
+ $('connection').className='pill '+(demo?'demo':connected?'connected':'');$('connection').innerHTML=`<i></i>${paused?'PAUSED':demo?'DEMO PREVIEW':connected?'BACKEND CONNECTED':'AWAITING BACKEND'}`;
  showNotice(data.error||(demo?'DEMO PREVIEW — synthetic pipeline data with a recorded sample frame. No game, database writes, or model calls are running.':''));
  const e=data.experiment||{};$('experiment-name').textContent=e.id||'No experiment';$('map-name').textContent=e.map?'MAP / '+e.map.toUpperCase():'Select an experiment when MongoDB is connected';$('generation').innerHTML=e.generation!=null?`${String(e.generation).padStart(2,'0')}<span> / evolving</span>`:'—';$('fitness').textContent=fmt(data.leaderboard?.[0]?.mean_fitness);$('runs-count').textContent=fmt(data.counts?.runs);$('queue-count').textContent=data.jobs?`${data.jobs.queued||0} queued · ${data.jobs.running||0} running`:'No queue data yet';
  const worker=data.workers?.find(w=>w.state==='running')||data.workers?.[0];const running=worker?.state==='running';
- badge('vision-status',running?'PLAYING':worker?.state?.toUpperCase()||'WAITING',running);badge('mongo-status',ready?'CONNECTED':'OFFLINE',ready);
- const active=data.agents?.filter(a=>['running','retrying'].includes(a.state)).length||0;badge('luminal-status',active?'GENERATING':data.agents?.some(a=>a.state==='complete')?'READY':'WAITING',active);$('agent-count').textContent=active+' / 4 ACTIVE';
- $('worker-name').textContent=worker?.worker||worker?.identity||'NO WORKER CONNECTED';$('frame-age').textContent=worker?.updated_at?ageLabel(worker.updated_at):'—';$('fps').textContent=fmt(running?worker?.fps:null);$('targets').textContent=fmt(running?worker?.detections:null);$('points').textContent=fmt(worker?.points);$('worker-state').textContent=worker?.state||'Waiting';$('action').textContent=running?worker.action||'PLAYING':'STANDBY';$('elapsed').textContent=worker?.elapsed_s!=null?Math.round(worker.elapsed_s)+' / 180s':'— / 180s';
+ badge('vision-status',running?'PLAYING':worker?.state?.toUpperCase()||'WAITING',running);badge('mongo-status',demo?'DEMO':connected?'CONNECTED':'OFFLINE',connected);
+ const active=data.agents?.filter(a=>['running','retrying'].includes(a.state)).length||0;const states=data.agents?.map(a=>a.state)||[];badge('luminal-status',active?'GENERATING':states.includes('stale')?'STALE':states.includes('error')?'ERROR':states.includes('fallback')?'FALLBACK':states.includes('complete')?'READY':'WAITING',active);$('agent-count').textContent=active+' / 4 ACTIVE';
+ $('worker-name').textContent=worker?.worker||worker?.identity||'NO WORKER CONNECTED';$('frame-age').textContent=worker?.updated_at?ageLabel(worker.updated_at):'—';$('fps').textContent=fmt(running?worker?.fps:null);$('targets').textContent=fmt(running?worker?.detections:null);$('points').textContent=fmt(worker?.points);$('worker-state').textContent=worker?.state||'Waiting';$('action').textContent=running?worker.action||'PLAYING':'STANDBY';$('elapsed').textContent=worker?.elapsed_s!=null?Math.round(worker.elapsed_s)+'s elapsed':'— elapsed';
  agents(data.agents);if($('detail').open&&selectedPersona)openAgent(selectedPersona);
  $('model-name').textContent=data.model?.split('/').pop()||'No model recorded';$('calls-count').textContent=(data.counts?.llm_calls??'—')+' calls recorded';drawChart(data.chart);$('sample-note').textContent=data.runs_sampled!=null?`${data.runs_sampled} recent evaluations (max 500)`:'No results yet';
  $('collections').innerHTML=['jobs','runs','playbooks','llm_calls'].map(name=>`<div class="collection"><span class="collection-icon">▱</span><div><strong>${fmt(data.counts?.[name])}</strong><small>${name}</small></div><span>${ready?'↗':'—'}</span></div>`).join('');
- $('db-updated').textContent=data.events?.[0]?.at?'Latest activity '+ageLabel(data.events[0].at):'No activity recorded';$('last-refresh').textContent='Snapshot '+new Date().toLocaleTimeString()+' · '+(demo?'demo data':'polls every 2 seconds');events();renderGraph();
+ $('db-updated').textContent=data.events?.[0]?.at?'Latest activity '+ageLabel(data.events[0].at):'No activity recorded';const stamp=data.updated_at||receivedAt;$('last-refresh').textContent=(stamp?'Snapshot '+new Date(stamp).toLocaleTimeString():'No snapshot received')+' · '+(paused?'paused':demo?'demo data':'polls every 2 seconds');$('db-live').textContent=paused?'PAUSED':demo?'DEMO SNAPSHOT':connected?'POLLING · 2s':'OFFLINE';events();renderGraph();
 }
-async function refresh(){if(loading)return;loading=true;$('refresh').disabled=true;try{const response=await fetch('/api/snapshot?'+params());const data=await response.json();render(data);await updateFrame(data);}catch{render({connected:false,mode:$('mode').value,error:'Dashboard connection lost. Check that the local server is running.'});clearFrame();}finally{loading=false;$('refresh').disabled=false;}}
-async function loadExperiments(){const previous=$('experiment').value;try{const r=await fetch('/api/experiments?'+params());const d=await r.json();$('experiment').innerHTML=(d.experiments||[]).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join('')||'<option value="">No experiments found</option>';if([...$('experiment').options].some(o=>o.value===previous))$('experiment').value=previous;}catch{$('experiment').innerHTML='<option value="">Database unavailable</option>';}}
-$('pause').addEventListener('click',()=>{paused=!paused;$('pause').textContent=paused?'▶ Resume':'Ⅱ Pause';if(snapshot)render(snapshot);if(!paused)refresh();});
-$('refresh').addEventListener('click',async()=>{await loadExperiments();refresh();});
-$('mode').addEventListener('change',async()=>{clearFrame();await loadExperiments();refresh();});$('experiment').addEventListener('change',()=>{clearFrame();refresh();});
+async function refresh(){
+ if(loading||listing)return;
+ const version=++requestVersion,query=params(),controller=new AbortController();snapshotRequest=controller;
+ loading=true;$('refresh').disabled=true;
+ const timeout=setTimeout(()=>controller.abort(),12000);
+ try{
+  const response=await fetch('/api/snapshot?'+query,{signal:controller.signal});const data=await response.json();
+  if(!currentRequest(version,query))return;
+  receivedAt=Date.now();render(data);await updateFrame(data,query,version,controller.signal);
+ }catch{
+  if(currentRequest(version,query)){receivedAt=null;render({connected:false,mode:query.get('mode'),error:'Dashboard connection lost or timed out. Check that the local server is running.'});clearFrame();$('frame-label').textContent='NO LIVE FRAME';}
+ }finally{
+  clearTimeout(timeout);if(version===requestVersion){loading=false;snapshotRequest=null;$('refresh').disabled=false;}
+ }
+}
+async function loadExperiments(){
+ const version=++listVersion,mode=$('mode').value,previous=$('experiment').value;
+ listRequest?.abort();const controller=new AbortController();listRequest=controller;listing=true;
+ const timeout=setTimeout(()=>controller.abort(),12000);
+ try{
+  const r=await fetch('/api/experiments?mode='+encodeURIComponent(mode),{signal:controller.signal});
+  if(!r.ok)throw new Error('Experiments unavailable');const d=await r.json();
+  if(version!==listVersion||mode!==$('mode').value)return false;
+  $('experiment').innerHTML=(d.experiments||[]).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join('')||'<option value="">No experiments found</option>';
+  if([...$('experiment').options].some(o=>o.value===previous))$('experiment').value=previous;
+  return true;
+ }catch{
+  if(version!==listVersion||mode!==$('mode').value)return false;
+  $('experiment').innerHTML='<option value="">Database unavailable</option>';return true;
+ }finally{clearTimeout(timeout);if(version===listVersion){listing=false;listRequest=null;}}
+}
+function clearSelection(){cancelSnapshot();cancelListing();clearFrame();receivedAt=null;$('frame-label').textContent='NO LIVE FRAME';render({connected:false,mode:$('mode').value,error:'Loading selected data source…'});}
+$('pause').addEventListener('click',()=>{paused=!paused;if(paused){cancelSnapshot();cancelListing();}$('pause').textContent=paused?'▶ Resume':'Ⅱ Pause';if(snapshot)render(snapshot);if(!paused)reloadSelection();});
+async function reloadSelection(){cancelSnapshot();if(await loadExperiments())await refresh();}
+$('refresh').addEventListener('click',reloadSelection);
+$('mode').addEventListener('change',async()=>{clearSelection();$('experiment').innerHTML='<option value="">Loading experiments…</option>';const url=new URL(location.href);url.searchParams.set('mode',$('mode').value);history.replaceState(null,'',url.pathname+url.search+url.hash);await reloadSelection();});
+$('experiment').addEventListener('change',()=>{clearSelection();refresh();});
 $('close-detail').addEventListener('click',()=>$('detail').close());
 document.querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b===button));events();}));
-setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()+' LOCAL';if(!paused)refresh();},2000);
-(async()=>{agents();try{const c=await(await fetch('/api/config')).json();$('mode').value=new URLSearchParams(location.search).get('mode')||c.default_mode;}catch{}await loadExperiments();await refresh();})();
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()+' LOCAL';if(!paused&&!listing)refresh();},2000);
+(async()=>{
+ agents();listing=true;
+ const requested=new URLSearchParams(location.search).get('mode');
+ if(['live','demo'].includes(requested))$('mode').value=requested;
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
+ try{const c=await(await fetch('/api/config',{signal:controller.signal})).json();if(listVersion===0&&!['live','demo'].includes(requested))$('mode').value=c.default_mode==='demo'?'demo':'live';}catch{}finally{clearTimeout(timeout);}
+ // A user's selection or pause takes precedence over a delayed startup response.
+ if(listVersion!==0||paused)return;
+ listing=false;if(await loadExperiments()){if(!paused)await refresh();}
+})();
 
 // The map describes code paths. Status comes only from the existing snapshot;
 // selecting an arrow never claims that a network transfer is happening now.
 const flowNodes=[
  {id:'game',title:'Game session',sub:'Pixels in · controls out',lane:'On device',x:55,y:110,w:230,description:'The worker opens the game and starts a fresh evaluation episode.',reads:'Mouse and keyboard actions from the controller.',writes:'Game frames and HUD values for the vision pipeline.',source:'bot/worker.py',shape:{frame:'<captured image>',map:'<map identifier>'}},
- {id:'vision',title:'Vision pipeline',sub:'Capture → detect → track',lane:'On device',x:55,y:280,w:230,description:'The local vision model detects and tracks targets. HUD reading supplies the score used to evaluate the run.',reads:'Captured game frames; detection settings from the current strategy.',writes:'Tracked targets, target positions and HUD observations.',source:'vision/pipeline.py · vision/hud.py',shape:{targets:['<tracked detection>'],points:'<HUD score>'}},
+ {id:'vision',title:'Vision pipeline',sub:'Capture → detect → track',lane:'On device',x:55,y:280,w:230,description:'The local vision model detects and tracks targets. HUD reading supplies the score used to evaluate the run.',reads:'Captured game frames; detection settings from the current strategy.',writes:'Tracked targets, target positions and HUD observations.',source:'vision/pipeline.py · bot/hudread.py',shape:{targets:['<tracked detection>'],points:'<HUD score>'}},
  {id:'worker',title:'Controller / worker',sub:'Aim · fire · move · evaluate',lane:'On device',x:55,y:460,w:230,description:'The worker claims a job, loads its strategy, and uses vision observations to control the game. It submits the episode result when the run finishes.',reads:'A claimed evaluation job, strategy parameters and vision observations.',writes:'Game inputs, a completed run, and periodic dashboard telemetry.',source:'bot/worker.py · bot/controller.py',shape:{job_id:'<claimed job>',params:'<validated Strategy>',action:'<current control action>'}},
  {id:'jobs',title:'Evaluation queue',sub:'jobs · claimed atomically',lane:'MongoDB',x:415,y:110,w:230,description:'MongoDB holds pending evaluation jobs. A worker claims a job atomically and retrieves the matching strategy before playing.',reads:'Jobs created by the orchestrator.',writes:'Claimed job and strategy parameters to the worker; job status updates.',source:'mongo_orchestrator.py',shape:{job_id:'<job identifier>',strategy_id:'<playbook identifier>',generation:'<integer>',status:'queued → running → done'}},
  {id:'runs',title:'Run results',sub:'runs · fitness + diagnostics',lane:'MongoDB',x:415,y:310,w:230,description:'Completed episodes are saved with points, survival time and diagnostics. Fitness is points plus five times survival seconds.',reads:'The worker’s completed episode result.',writes:'Evaluation history used to rank parent strategies.',source:'mongo_orchestrator.py · evolution.py',shape:{job_id:'<job identifier>',points:'<number>',survival_s:'<seconds>',fitness:'points + 5 × survival_s',diagnostics:{}}},
- {id:'storage',title:'Strategy memory',sub:'playbooks · llm_calls · history',lane:'MongoDB',x:415,y:550,w:230,description:'The orchestrator commits the four child strategies, call logs, generation history and next jobs in one transaction. Saved strategies become candidates for future parent selection.',reads:'Validated children or parent fallbacks, plus model call records.',writes:'Saved strategy parameters, rationales, call logs and generation history.',source:'mongo_orchestrator.py',shape:{playbooks:'<four child strategy documents>',llm_calls:'<attempt records>',generations:'<champion history>'}},
+ {id:'storage',title:'Strategy memory',sub:'playbooks · llm_calls · history',lane:'MongoDB',x:415,y:550,w:230,description:'The orchestrator commits the four child strategies, call logs, generation history and next jobs in one transaction. Saved strategies become candidates for future parent selection.',reads:'Validated children or fallback proposals, plus model call records.',writes:'Saved strategy parameters, rationales, call logs and generation history.',source:'mongo_orchestrator.py',shape:{playbooks:'<four child strategy documents>',llm_calls:'<attempt records>',generations:'<champion history>'}},
  {id:'context',title:'Build generation',sub:'Rank parents · assign personas',lane:'Orchestration',x:870,y:110,w:245,description:'After all evaluations finish, the orchestrator ranks strategies by mean fitness and builds context from up to two parents. Tuner and Defender use the champion; Bold and Explorer use the runner-up when available.',reads:'Saved run diagnostics, parent parameters and generation history.',writes:'A generation request with parent context for four Luminal personas.',source:'evolution.py · generation.py',shape:{generation:'<next generation>',parents:[{strategy_id:'<ranked parent>',params:'<Strategy>',diagnostics:{},mean_fitness:'<number>',evaluation_count:'<integer>'}],history:[]}},
  ...Object.keys(roles).map((name,i)=>({id:name,title:name,sub:roles[name][1].split('. ')[0],lane:'Luminal',x:i%2?1000:785,y:i<2?300:415,w:175,description:`${roles[name][1]} This is one of four prompt personas using the configured Luminal model. Each proposes a complete set of bot settings and a rationale.`,reads:'Assigned parent, diagnostics, fitness, history and reference parents.',writes:'A strategy proposal and rationale; request progress and usage records.',source:'generation.py · luminal_client.py',shape:{strategy:'<complete Strategy object>',rationale:'<why these settings may help>'}})),
- {id:'validate',title:'Validate / fallback',sub:'Check settings · retain safe parent',lane:'Orchestration',x:870,y:600,w:245,description:'Each model response is parsed and checked against the strategy contract inside the Luminal client. Invalid responses can be retried; exhausted attempts fall back to the parent strategy. This node groups checks performed within each agent call.',reads:'A returned proposal or provider error.',writes:'A validated child strategy, or a parent fallback, with attempt logs.',source:'luminal_client.py · strategy.py',shape:{params:'<validated Strategy>',fallback:'<boolean>',rationale:'<explanation>',llm_calls:'<attempt logs>'}}
+ {id:'validate',title:'Validate / fallback',sub:'Check settings · recover failures',lane:'Orchestration',x:870,y:600,w:245,description:'Each model response is parsed and checked against the strategy contract inside the Luminal client. Invalid responses can be retried; exhausted attempts reuse a compatible cached proposal or generate a local mutation of the parent. This node groups checks performed within each agent call.',reads:'A returned proposal or provider error.',writes:'A validated child strategy, or a cached/local fallback proposal, with attempt logs.',source:'luminal_client.py · strategy.py',shape:{params:'<validated Strategy>',fallback:'<boolean>',fallback_source:'cached_proposal | local_mutation | null',rationale:'<explanation>',llm_calls:'<attempt logs>'}}
 ];
 const flowEdges=[
  {id:'pixels',from:'game',to:'vision',label:'frames',path:'M170 200 V280',x:170,y:240,payload:{frame:'<captured game image>'},description:'Captured images are passed to detection and HUD reading on the game machine.'},
  {id:'targets',from:'vision',to:'worker',label:'targets',path:'M170 370 V460',x:170,y:415,payload:{targets:['<tracked target>'],points:'<HUD score>'},description:'Vision observations guide target selection, aiming and movement.'},
- {id:'inputs',from:'worker',to:'game',label:'controls',path:'M55 505 H30 V155 H55',x:72,y:665,payload:{actions:['<mouse movement>','<fire / movement / reload>']},description:'The controller sends mouse and keyboard inputs back to the game. This fast local loop runs throughout an episode.'},
+ {id:'inputs',from:'worker',to:'game',label:'controls',path:'M55 505 H30 V155 H55',x:42,y:245,payload:{actions:['<mouse movement>','<fire / movement / reload>']},description:'The controller sends mouse and keyboard inputs back to the game. This fast local loop runs throughout an episode.'},
  {id:'claim',from:'jobs',to:'worker',label:'claim + params',path:'M415 155 H345 V505 H285',x:345,y:220,payload:{job_id:'<claimed job>',strategy_id:'<strategy>',params:'<loaded Strategy>'},description:'The worker claims a queued job atomically and loads its saved strategy. This is a worker read, not a database-initiated push.'},
  {id:'result',from:'worker',to:'runs',label:'save result',path:'M285 530 C390 530 350 355 415 355',x:351,y:453,payload:{job_id:'<job>',points:'<number>',survival_s:'<seconds>',diagnostics:{}},description:'After an episode, the worker submits its result. The orchestrator persists it and marks the job done.'},
  {id:'rank',from:'runs',to:'context',label:'ranked results',path:'M645 355 H720 V140 H870',x:720,y:237,payload:{parents:'<up to two parents ranked by mean fitness>',diagnostics:'<aggregated run diagnostics>'},description:'Once evaluations finish, the orchestrator ranks evaluated strategies and aggregates their diagnostics.'},
  {id:'memory',from:'storage',to:'context',label:'parent context',path:'M645 585 H747 V175 H870',x:747,y:540,payload:{params:'<parent settings>',history:'<prior champions>'},description:'Saved parent settings and generation history are included in the next generation request.'},
  ...Object.keys(roles).map((name,i)=>({id:'prompt-'+name,from:'context',to:name,label:'',path:i<2?`M${i%2?1045:930} 200 V245 H${i%2?1087:872} V300`:`M${i%2?1115:870} 170 H${i%2?1188:770} V460 H${i%2?1175:785}`,payload:{persona:name,parent:'<assigned parent>',diagnostics:{},reference_parents:[],history:[]},description:`The orchestrator submits a ${name} prompt with the assigned parent and shared evaluation context. Calls can run concurrently.`})),
  ...Object.keys(roles).map((name,i)=>({id:'proposal-'+name,from:name,to:'validate',label:'',path:i<2?`M${i%2?1115:835} 390 V395 H${i%2?1196:762} V570 H${i%2?1050:935} V600`:`M${i%2?1087:872} 505 V550 H${i%2?1025:960} V600`,payload:{strategy:'<complete settings>',rationale:'<proposal rationale>'},description:`The ${name} response is parsed and validated. Its own client call handles retries and fallback before generation results are collected.`})),
- {id:'commit',from:'validate',to:'storage',label:'commit generation',path:'M870 645 H700 V615 H645',x:748,y:674,payload:{strategies:'<four validated children or fallbacks>',llm_calls:'<attempt records>'},description:'The orchestrator saves all generation outputs and next jobs in an atomic MongoDB transaction.'},
+ {id:'commit',from:'validate',to:'storage',label:'commit generation',path:'M870 645 H700 V615 H645',x:770,y:645,payload:{strategies:'<four validated children or fallbacks>',llm_calls:'<attempt records>'},description:'The orchestrator saves all generation outputs and next jobs in an atomic MongoDB transaction.'},
  {id:'enqueue',from:'storage',to:'jobs',label:'queue next 5',path:'M445 550 H395 V85 H530 V110',x:530,y:75,payload:{child_evaluations:4,champion_reevaluation:1},description:'As part of the same generation transaction, the orchestrator creates one evaluation per child and one champion reevaluation. The database does not generate these jobs itself.'}
 ];
 const flowTour=['game','vision','worker','runs','context','Bold','validate','storage','jobs','worker'];

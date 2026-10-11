@@ -17,7 +17,8 @@ class DemoSource:
             'Start retreating sooner and alternate strafing to create space before reloading.',
             'Prioritize the nearest threat and test alternating movement while keeping aim settings fixed.',
         ]
-        books = [dict(_id=f'p{i}', persona=name, generation=8, rationale=rationales[i], changed_params=['aim_gain','retreat_box_h'], fallback=False) for i,name in enumerate(names)]
+        changes = [['aim_gain','retreat_box_h'], ['aim_gain'], ['retreat_box_h','strafe_mode'], ['target_rule','strafe_mode']]
+        books = [dict(_id=f'p{i}', persona=name, generation=8, rationale=rationales[i], changed_params=changes[i], fallback=False) for i,name in enumerate(names)]
         runs = [dict(_id=f'r{g}', job_id=f'j{g}', strategy_id=f'p{g%4}', generation=g, worker='game-laptop-01', points=180+g*95,
                      survival_s=90+g*10, fitness=630+g*145, diagnostics={'overshoot_rate':.18,'hit_rate':.72}, completed_at=now-timedelta(seconds=(8-g)*40+12)) for g in range(8,-1,-1)]
         jobs = [dict(job_id=f'job{i}', kind='child', status='done' if i<3 else 'queued', created_at=now-timedelta(seconds=50+i)) for i in range(5)]
