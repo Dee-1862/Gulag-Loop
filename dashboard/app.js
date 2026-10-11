@@ -63,7 +63,7 @@ async function refresh(){
  try{
   const response=await fetch('/api/snapshot?'+query,{signal:controller.signal});const data=await response.json();
   if(!currentRequest(version,query))return;
-  receivedAt=Date.now();render(data);await updateFrame(data,query,version,controller.signal);
+  receivedAt=Date.now();render(data);renderRecordings(data,query);await updateFrame(data,query,version,controller.signal);
  }catch{
   if(currentRequest(version,query)){receivedAt=null;render({connected:false,mode:query.get('mode'),error:'Dashboard connection lost or timed out. Check that the local server is running.'});clearFrame();$('frame-label').textContent='NO LIVE FRAME';}
  }finally{
@@ -283,3 +283,24 @@ $('view-records').addEventListener('click',event=>{
  if(run){$('record-run').value=run.dataset.recordRun;renderRecords();$('record-run').focus();$('record-run').scrollIntoView?.({block:'center',behavior:'smooth'});}
 });
 renderRecords();
+
+// Episode recordings: MP4s the bot publisher stores in GridFS ('footage'), streamed by /api/video with Range support.
+let recordingKey='',recordingJob='';
+function renderRecordings(data,query){
+ const items=data.footage||[],personas={};(data.records?.strategies||[]).forEach(s=>personas[String(s._id)]=s.persona);
+ $('recordings-count').textContent=`${items.length} SAVED`;
+ const key=(query.get('experiment')||'')+'|'+items.map(f=>f.job_id).join(',');
+ if(key===recordingKey)return;
+ const sameExperiment=recordingKey.split('|')[0]===key.split('|')[0];recordingKey=key;
+ if(!sameExperiment||!items.some(f=>f.job_id===recordingJob)){ // a different experiment: never keep its old video
+  recordingJob='';const v=$('recording');v.pause();v.removeAttribute('src');v.load();v.hidden=true;$('recording-empty').hidden=false;
+  $('recording-caption').textContent='Recordings appear when a worker publishes footage for this experiment.';}
+ if(!items.length){$('recordings-list').innerHTML='<p class="empty">No recordings for this experiment yet.</p>';return;}
+ $('recordings-list').innerHTML=items.map(f=>{const who=personas[String(f.strategy_id)]||String(f.strategy_id||'').split(':').pop();
+  return `<button class="recording-item${f.job_id===recordingJob?' selected':''}" data-job="${esc(f.job_id)}"><span><b>${esc(who)}</b><small>gen ${esc(f.generation??0)} · ${esc(String(f.job_id).slice(0,8))}</small></span><span>${fmt(f.points)} pts · ${f.kills??'—'} kills</span><span>${fmt(f.survival_s)}s · fit ${fmt(f.fitness)}</span></button>`;}).join('');
+ document.querySelectorAll('.recording-item').forEach(b=>b.addEventListener('click',()=>{
+  recordingJob=b.dataset.job;document.querySelectorAll('.recording-item').forEach(x=>x.classList.toggle('selected',x===b));
+  const q=new URLSearchParams({mode:query.get('mode')||'live',experiment:query.get('experiment')||'',job:recordingJob});
+  const v=$('recording');v.src='/api/video?'+q;v.hidden=false;$('recording-empty').hidden=true;v.play().catch(()=>{});
+  $('recording-caption').textContent=`Job ${recordingJob} · annotated HUD view recorded by the vision worker`;}));
+}
