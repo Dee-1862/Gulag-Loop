@@ -14,6 +14,7 @@ import sys
 import time
 
 from bot.worker import Runner, log
+from bot.paths import p as _p
 
 
 def load_evo(evo_dir):
@@ -37,8 +38,8 @@ def make_client(evo_dir, offline):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evo-dir", default="D:/czb/evo")
-    ap.add_argument("--state", default="D:/czb/evo_state/kino.json")
+    ap.add_argument("--evo-dir", default=_p("evo"))
+    ap.add_argument("--state", default=_p("evo_state", "kino.json"))
     ap.add_argument("--generations", type=int, default=3, help="stop after this generation is fully evaluated")
     ap.add_argument("--map", default="kino")
     ap.add_argument("--max-s", type=float, default=180)

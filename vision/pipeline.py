@@ -52,6 +52,10 @@ class VisionPipeline:
         v = cfg["vision"]
         masks = [tuple(m) for m in v.get("masks") or []]
         weights = weights or v["weights"]
+        if str(weights).endswith(".engine") and not os.path.exists(weights):
+            pt = str(weights)[:-len(".engine")] + ".pt"
+            print(f"[vision] {weights} not built on this machine; using {pt} (run setup to build TensorRT)")
+            weights = pt
         det = Detector(weights, v.get("imgsz", 640), v.get("classes"), masks, v.get("min_box_h_frac", 0),
                        max_aspect=v.get("max_aspect", 1.3))
         cap = None

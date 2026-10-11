@@ -1,0 +1,180 @@
+{
+  "best": {
+    "persona": "Aggressive",
+    "params": {
+      "det_conf": 0.3,
+      "aim_gain": 1.0,
+      "aim_max_step": 120,
+      "aim_y_offset": 0.2,
+      "fire_radius_px": 45,
+      "burst_ms": 200,
+      "retreat_box_h": 450,
+      "strafe_mode": "none",
+      "strafe_period_s": 2.0,
+      "reload_when_clear_at": 2,
+      "scan_turn_px": 220,
+      "target_rule": "nearest"
+    },
+    "measured": {
+      "games": 2,
+      "mean_fitness": 481.0,
+      "kills": [
+        0,
+        3
+      ],
+      "points_gained": [
+        0,
+        380
+      ],
+      "survival_s": [
+        57.2,
+        59.2
+      ]
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop",
+    "alias_of": "aggressive"
+  },
+  "baseline": {
+    "persona": "Baseline",
+    "params": {
+      "det_conf": 0.35,
+      "aim_gain": 0.8,
+      "aim_max_step": 80,
+      "aim_y_offset": 0.15,
+      "fire_radius_px": 25,
+      "burst_ms": 120,
+      "retreat_box_h": 300,
+      "strafe_mode": "none",
+      "strafe_period_s": 2.0,
+      "reload_when_clear_at": 3,
+      "scan_turn_px": 60,
+      "target_rule": "center"
+    },
+    "measured": {
+      "games": 2,
+      "mean_fitness": 445.0,
+      "kills": [
+        0,
+        3
+      ],
+      "points_gained": [
+        0,
+        400
+      ],
+      "survival_s": [
+        32.7,
+        65.3
+      ]
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop"
+  },
+  "aggressive": {
+    "persona": "Aggressive",
+    "params": {
+      "det_conf": 0.3,
+      "aim_gain": 1.0,
+      "aim_max_step": 120,
+      "aim_y_offset": 0.2,
+      "fire_radius_px": 45,
+      "burst_ms": 200,
+      "retreat_box_h": 450,
+      "strafe_mode": "none",
+      "strafe_period_s": 2.0,
+      "reload_when_clear_at": 2,
+      "scan_turn_px": 220,
+      "target_rule": "nearest"
+    },
+    "measured": {
+      "games": 2,
+      "mean_fitness": 481.0,
+      "kills": [
+        0,
+        3
+      ],
+      "points_gained": [
+        0,
+        380
+      ],
+      "survival_s": [
+        57.2,
+        59.2
+      ]
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop"
+  },
+  "conservative": {
+    "persona": "Conservative",
+    "params": {
+      "det_conf": 0.45,
+      "aim_gain": 0.6,
+      "aim_max_step": 60,
+      "aim_y_offset": 0.25,
+      "fire_radius_px": 25,
+      "burst_ms": 100,
+      "retreat_box_h": 160,
+      "strafe_mode": "alternate",
+      "strafe_period_s": 1.5,
+      "reload_when_clear_at": 4,
+      "scan_turn_px": 140,
+      "target_rule": "nearest"
+    },
+    "measured": {
+      "games": 0,
+      "mean_fitness": null,
+      "kills": [],
+      "points_gained": [],
+      "survival_s": []
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop"
+  },
+  "sniper": {
+    "persona": "Sniper",
+    "params": {
+      "det_conf": 0.4,
+      "aim_gain": 0.5,
+      "aim_max_step": 40,
+      "aim_y_offset": 0.12,
+      "fire_radius_px": 12,
+      "burst_ms": 60,
+      "retreat_box_h": 250,
+      "strafe_mode": "none",
+      "strafe_period_s": 2.0,
+      "reload_when_clear_at": 3,
+      "scan_turn_px": 100,
+      "target_rule": "center"
+    },
+    "measured": {
+      "games": 0,
+      "mean_fitness": null,
+      "kills": [],
+      "points_gained": [],
+      "survival_s": []
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop"
+  },
+  "kiter": {
+    "persona": "Kiter",
+    "params": {
+      "det_conf": 0.35,
+      "aim_gain": 0.8,
+      "aim_max_step": 90,
+      "aim_y_offset": 0.25,
+      "fire_radius_px": 35,
+      "burst_ms": 150,
+      "retreat_box_h": 220,
+      "strafe_mode": "alternate",
+      "strafe_period_s": 1.0,
+      "reload_when_clear_at": 3,
+      "scan_turn_px": 180,
+      "target_rule": "nearest"
+    },
+    "measured": {
+      "games": 0,
+      "mean_fitness": null,
+      "kills": [],
+      "points_gained": [],
+      "survival_s": []
+    },
+    "source": "kino_v6 experiment, browser port, RTX 3060 laptop"
+  }
+}

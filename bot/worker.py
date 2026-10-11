@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from bot.controller import BASELINE, run_episode
 from bot.game import PortGame
+from bot.paths import p as _p
 
 
 def log(*a):
@@ -47,8 +48,8 @@ def calibrate(game, counts=20, reps=6):
         pydirectinput.moveRel(sgn * counts, 0, relative=True, disable_mouse_acceleration=True)
         b = grab()
         if r == 0:
-            cv2.imwrite("D:/czb/port/calib_a.png", a.astype(np.uint8))
-            cv2.imwrite("D:/czb/port/calib_b.png", b.astype(np.uint8))
+            pass
+            pass
         (dx, dy), resp = cv2.phaseCorrelate(a, b)
         log(f"calib move {sgn * counts:+d} counts -> dx {dx:+.1f}px dy {dy:+.1f}px (resp {resp:.2f})")
         if resp > 0.1 and abs(dx) > 1:
@@ -70,8 +71,8 @@ def load_calib():
 class Runner:
     """One open game session that evaluates jobs back to back (used by worker `run` and bot.loop)."""
 
-    def __init__(self, map_id="kino", config="config.yaml", out_dir="D:/czb/episodes",
-                 save_frames="D:/czb/port_frames", frame_every=1.0, max_s=180.0, worker=None,
+    def __init__(self, map_id="kino", config="config.yaml", out_dir=_p("episodes"),
+                 save_frames=_p("port_frames"), frame_every=1.0, max_s=180.0, worker=None,
                  slot=None, input_mode="os", ocr_gpu=True, latency_s=0.11):
         from vision.capture import Capture
         from vision.pipeline import VisionPipeline
@@ -153,10 +154,13 @@ def main():
     ap.add_argument("--map", default="kino")
     ap.add_argument("--jobs", default=None)
     ap.add_argument("--baseline", type=int, default=0, help="run the baseline strategy N times (no jobs file)")
+    ap.add_argument("--strategy", default=None, help="strategies.json (name -> params) to play directly")
+    ap.add_argument("--name", default="best", help="which strategy in --strategy to play")
+    ap.add_argument("--games", type=int, default=1, help="games to play with --strategy")
     ap.add_argument("--results", default="results.json")
     ap.add_argument("--max-s", type=float, default=180)
-    ap.add_argument("--out-dir", default="D:/czb/episodes", help="HUD recordings per episode")
-    ap.add_argument("--save-frames", default="D:/czb/port_frames", help="raw frames for detector retraining ('' = off)")
+    ap.add_argument("--out-dir", default=_p("episodes"), help="HUD recordings per episode")
+    ap.add_argument("--save-frames", default=_p("port_frames"), help="raw frames for detector retraining ('' = off)")
     ap.add_argument("--worker", default=socket.gethostname())
     ap.add_argument("--frame-every", type=float, default=1.0, help="seconds between saved raw frames")
     args = ap.parse_args()
@@ -176,6 +180,13 @@ def main():
 
     if args.jobs:
         jobs = json.load(open(args.jobs))
+    elif args.strategy:
+        lib = json.load(open(args.strategy))
+        entry = lib[args.name]
+        params = entry.get("params", entry)
+        jobs = [{"job_id": f"{args.name}-{i}-{int(time.time())}", "strategy_id": args.name, "kind": "play",
+                 "params": params} for i in range(args.games)]
+        log(f"playing '{args.name}' x{args.games}: {json.dumps(params)}")
     else:
         jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
                  "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]

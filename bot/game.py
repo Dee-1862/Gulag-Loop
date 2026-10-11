@@ -58,13 +58,15 @@ TILE_W, TILE_H, APP_CHROME_H = 640, 360, 150  # --app window: title bar + frame 
 
 
 class PortGame:
-    def __init__(self, map_id="kino", profile="D:/czb/chrome-profile", log=print, slot=None, input_mode="os"):
+    def __init__(self, map_id="kino", profile=None, log=print, slot=None, input_mode="os"):
         """slot=None: one big window driven by real OS input (pydirectinput, needs the foreground).
         slot=0..3 + input_mode='js': small tiled window driven by in-page synthetic input (bot.jsinput),
         so several games run side by side without focus or the physical mouse."""
         self.map_id = map_id
         self.slot = slot
         self.input_mode = input_mode
+        from bot.paths import p as _p
+        profile = profile or _p("chrome-profile")
         self.profile = profile if slot is None else f"{profile}-{slot}"
         self.log = log
         self._pw = self._ctx = self.page = None
