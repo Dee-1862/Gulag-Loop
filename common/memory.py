@@ -1,4 +1,4 @@
-"""Memory reads and writes for ZombieLoop.
+"""Memory reads and writes for Gulag Loop.
 
 Design and the papers behind it: "Memory design and evidence" tab of the plan doc.
 - retrieve(): Generative Agents score (relevance + recency + importance, each

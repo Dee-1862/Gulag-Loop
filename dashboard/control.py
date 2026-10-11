@@ -5,6 +5,7 @@ One worker at a time, launched exactly as you would by hand:
 so the game runs with no window and is watched in the dashboard's live viewport.
 """
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -15,6 +16,30 @@ from threading import Lock
 
 ROOT = Path(__file__).resolve().parents[1]
 LOGS = ROOT / "local_data"
+
+
+def console_tail(path):
+    """Bounded, credential-redacted stdout for the dashboard-owned worker only."""
+    try:
+        with open(path, "rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - 65536))
+            text = stream.read(65536).decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if size > 65536:
+            lines = lines[1:]  # First line may have been truncated in the middle.
+        result = []
+        for line in lines[-48:]:
+            line = re.sub(r"(?i)(?:mongodb(?:\+srv)?|https?)://[^\s]+", "[URL redacted]", line)
+            line = re.sub(r"(?i)(?:api[_-]?key|authorization|password|token)\s*[:=]\s*\S+", "[credential redacted]", line)
+            line = re.sub(r"(?i)Bearer\s+\S+|sk-[A-Za-z0-9_-]+", "[credential redacted]", line)
+            line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line)
+            if line.strip():
+                result.append(line[:500])
+        return result
+    except OSError:
+        return []
 
 
 def worker_processes():
@@ -58,8 +83,7 @@ class WorkerControl:
             tail = []
             if self.log_path and self.log_path.exists():
                 try:
-                    lines = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                    tail = [l for l in lines if l.strip()][-4:]
+                    tail = console_tail(self.log_path)
                 except OSError:
                     pass
             others = worker_processes()
@@ -67,7 +91,7 @@ class WorkerControl:
             if not own and others:  # started from a terminal: still controllable here
                 pid, exp = others[0]
                 return {"enabled": True, "running": True, "experiment": exp, "pid": pid, "external": True,
-                        "started_at": None, "exit_code": None, "log_tail": tail}
+                        "started_at": None, "exit_code": None, "log_tail": []}
             return {"enabled": True, "running": own, "experiment": self.experiment,
                     "pid": self.proc.pid if self.proc else None, "started_at": self.started_at,
                     "exit_code": None if self.proc is None or self.running() else self.proc.returncode,

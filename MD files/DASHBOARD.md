@@ -1,157 +1,111 @@
-# Backend dashboard
+# Gulag Loop dashboard
 
-The dashboard shows the real-game evolution loop: vision/controller → MongoDB →
-four Luminal agents → queued evaluations → vision/controller. It is a local Python
-HTTP service and a browser interface; no frontend build or Windows dependencies are
-needed on the dashboard laptop.
+A live view of the learning loop: vision/game worker → MongoDB → four Luminal
+agents → MongoDB → the next game round.
 
 ## Start
-
-From the repository root:
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dashboard.txt
 .venv/bin/python -m dashboard.server
 ```
 
-Open http://127.0.0.1:8765. The default is live mode. Supply `MONGODB_URI` and optional
-`MONGODB_DB` in the private `.env`, then select your experiment. The dashboard only
-reads MongoDB; it cannot start a game, trigger model calls, or modify jobs.
+Open http://127.0.0.1:8765. Configure `MONGODB_URI` and optional `MONGODB_DB` in
+`.env`. The existing database name remains `zombieloop` for compatibility with
+saved data and teammates' workers; the project/display name is **Gulag Loop**.
 
-To preview without credentials:
+The dashboard uses only the live backend. There is no source or experiment
+selector and no `--demo` mode. Old browser demo links open the live dashboard;
+requests for synthetic API data are rejected. Synthetic fixtures remain available
+only to automated tests.
 
-```sh
-.venv/bin/python -m dashboard.server --demo
-```
+## One combined history
 
-The visible demo banner identifies synthetic metrics and a recorded sample image.
-Demo mode never calls Luminal or writes to MongoDB. You can select Demo preview or
-Live backend in the browser. Restart the server after changing `.env`.
-Use `--port 8766` if the default port is already occupied.
+All experiments with `design: bot` are included. The overview follows the most
+recently active worker, displays the four personas, and lists the latest episode
+recordings. The **MongoDB records** tab has a chronological run stream with the
+newest results first. **Load older runs** retrieves another 25 evaluations across
+all experiments, so older history remains accessible without selecting experiments.
+Click a run to inspect its results. New arrivals are merged without dropping older
+runs already loaded. Every run/video keeps its originating experiment label.
 
-## What each panel shows
+The display combines history; the database experiments and evolution loops stay
+independent. Parent comparisons, evaluation averages, strategy links, video URLs
+and frame requests retain their original experiment identities. Generation numbers
+are meaningful only within an experiment. The top bar therefore shows experiment
+and evaluation counts instead of a misleading shared generation number.
 
-- **MongoDB Records tab:** inspect up to 25 recent saved runs, including points,
-  survival, fitness, worker identity, and diagnostics. Inspect up to 50 recent
-  strategies with all 12 settings, rationales, parent links, and sampled evaluation
-  scores. Filter the latest 50 jobs by status and review the latest 20 Luminal call
-  attempts. Click a completed job to open its run, or a strategy link to inspect
-  its settings. Queue readiness uses full experiment job totals. The Overview also
-  summarizes the latest saved evaluation, even without live worker telemetry.
-  Open directly at http://127.0.0.1:8765/#records.
-- **Data Flow tab:** an interactive map of the game, vision, worker, MongoDB
-  collections, parent selection, four Luminal personas, validation, and job feedback
-  loop. Click a stage or arrow to inspect its inputs and outputs. Observed snapshots
-  and illustrative payloads have separate labels. Use the guided walkthrough,
-  zoom buttons, drag-to-pan, Fit, and Copy JSON. Tab/Enter also select graph items;
-  arrow keys switch dashboard tabs. Open directly at http://127.0.0.1:8765/#flow.
-- **Data flow:** vision worker, MongoDB connection, and Luminal generation status,
-  with the strategy/job feedback path back to the game worker.
-- **Worker viewport:** latest annotated 640×360 game thumbnail, loop FPS, confirmed
-  detections, current action, points gained, and elapsed episode time.
-- **Four agents:** Bold, Tuner, Defender, Explorer; current attempt status plus last
-  saved call latency. Click an agent for its latest persisted rationale and changes.
-- **MongoDB activity:** scoped document counts for jobs, runs, playbooks, and calls.
-- **Learning history:** best and mean *run* fitness grouped by evaluation generation,
-  and the highest mean strategy fitness among the most recent 500 evaluations.
-- **Activity stream:** saved runs, job states, and call attempts. Filter by MongoDB
-  job/run records or Luminal call records. This is polling, not a change-stream audit.
+## Views
 
-The browser polls about every two seconds; responses are cached briefly. Historical
-queries are bounded to 500 runs/jobs/playbooks and 200 calls, while collection counts
-and job-status totals cover the selected experiment. A completed attempt reflects
-provider/validation success; the rationale appears after the orchestrator commits
-its transaction. Prior saved metadata can remain visible while the next call runs.
-Records are scoped to the selected experiment, use explicit field projections, and
-are read-only. Run and strategy selections persist across polling. Strategy scores
-use the recent run sample; they are not claims of all-time performance. Parent or
-job links outside the returned record window are shown as unavailable. Empty call
-history does not imply the four personas have run. Saved run metrics are displayed
-separately from current worker telemetry, with completion timestamps.
+- **Overview:** worker viewport, four agent cards, and episode recordings.
+- **Data flow:** three clickable layers: Vision & game, MongoDB memory, four Luminal
+  agents. Four two-way connections link MongoDB to Bold, Tuner, Defender and Explorer.
+  Click a layer, node or connection to see evidence, saved rationales and exact
+  parent → proposed setting changes. Proposals are hypotheses until gameplay tests
+  them. Each persona shows its most recently updated experiment and that experiment's
+  latest saved proposal. Saved proposal generations are explicitly labeled.
+- **MongoDB records:** unified run history, selected evaluation outcomes, strategy
+  comparisons, and expandable diagnostics, full settings, lineage, queue and call
+  history. Queue totals span all experiments; readiness is independent per experiment.
 
-The Data Flow tab uses this same snapshot and refresh controls. Its architecture
-stays available without a database connection. Arrows describe implemented code
-paths, not measured network transfers, and highlighting follows your selection.
-Parent selection and validation have no independent heartbeat; they are labeled
-as code paths rather than shown as actively running. Validation is grouped visually
-but happens inside each persona's client call. After failed attempts, the client
-reuses a compatible cached proposal or generates a local mutation of the parent;
-the dashboard identifies these as fallbacks. The storage-to-queue arrow represents
-the orchestrator's transaction, not a MongoDB trigger. For a synthetic preview,
-open http://127.0.0.1:8765/?mode=demo#flow.
+## Console and freshness
 
-**Pause pauses only the dashboard's automatic refresh.** It does not stop the bot,
-Luminal calls, database writes, or work in Codex. Use the worker's F8 abort to stop
-an active game episode, and the terminal running the orchestrator to stop that
-process. Refresh can manually fetch a snapshot while the dashboard is paused.
-Pausing also discards requests already in flight. Switching data source or
-experiment discards earlier responses so they cannot overwrite the selected view.
-The footer shows the snapshot time, rather than the time you pressed Pause.
+Project console shows captured stdout for a local worker launched by this dashboard
+server. Vision and persona output is matched to its experiment; shared MongoDB and
+agent-layer output shows the local orchestrator. Remote/externally started workers
+may have no capture. Saved backend events are separately labeled as records, not
+stdout, and include their originating experiment.
 
-## Live instrumentation
+Console capture reads at most 64 KiB / 48 lines, redacts URLs and common credential
+patterns, and shows at most 12 matching lines. Snapshots exclude raw provider errors,
+credentials and frames. Parent settings outside the recent playbook sample are
+unavailable, never invented.
 
-Run the updated worker and orchestrator code from this branch on the game machine.
-The existing commands still apply:
+Snapshots refresh approximately every two seconds. **Pause updates** freezes
+snapshot polling; it does not stop gameplay or model calls. Manual refresh still
+works. Game controls separately offer **New run** and **Stop bot**. New run creates
+or starts a named experiment; its results join the combined history automatically.
+Use `--read-only` or `DASHBOARD_READ_ONLY=1` to disable game controls.
+
+Queries sample 500 runs/jobs/playbooks, 200 calls and 50 status documents. Record
+inspectors initially show 25 runs, 50 strategies/jobs, and 20 calls. Full document
+counts and queue totals span all bot experiments. Strategy scores use the recent
+run sample. Run history can page beyond the initial sample.
+
+Worker telemetry older than 12 seconds and pending agent progress older than
+240 seconds are marked stale. The viewport requests the active worker's experiment,
+identity and job; historical results do not imply a worker is currently playing.
+
+## Instrumentation
+
+On the game machine:
 
 ```sh
 python -m bot.worker run --experiment YOUR_EXPERIMENT --propose --generations 8
 ```
 
-For manual orchestration, `python mongo_orchestrator.py --experiment YOUR_EXPERIMENT
-propose` also publishes agent progress. Workers must run with `--experiment` to send
-live vision telemetry. Historical results remain visible from older workers, but
-live thumbnails and heartbeats require the updated instrumentation.
+Worker/orchestrator telemetry goes to `dashboard_status` through a bounded background
+queue. Monitoring failures do not block gameplay or strategy generation. Updates from
+older workers may include historical records without fresh telemetry or console output.
 
-The new `dashboard_status` collection stores one current document per experiment
-and worker, or experiment and persona. Worker frames and progress are updated at
-most once every two seconds. Agent signals are emitted at request start, retry,
-success, and fallback. The default `_id` index is enough for these upserts; no setup
-migration is required. The worker/orchestrator database user needs write permission
-for this collection; the dashboard user only needs read permission.
+## Endpoints and checks
 
-Writes run on a bounded background queue with a two-second operation timeout. If
-monitoring is unavailable, the game and generator continue. No raw provider errors,
-API keys, or connection strings are exposed by the HTTP API.
+The server binds to `127.0.0.1`; it is a local service without public authentication.
 
-A running worker heartbeat older than 12 seconds becomes **stale**; a pending agent
-signal older than 240 seconds becomes **stale**. Missing signals mean waiting, not
-proof that a process is alive. Frames are hidden when no recent running worker is
-observed. Terminal worker states remain complete/aborted/stopped.
-The viewport follows the most recently updated running worker (or most recent
-worker if none is running). Its image is fetched for that worker and job only;
-missing images are not labeled live. Elapsed time is shown without assuming a
-fixed episode duration.
-
-## Local endpoints and verification
-
-The server binds only to `127.0.0.1`. Open it on the same laptop; it can read an Atlas
-cluster shared with remote game workers. It has no authentication and should not be
-exposed publicly without an authenticated reverse proxy.
-
-- `GET /api/experiments`: experiments using the bot schema.
-- `GET /api/snapshot?experiment=ID&mode=live`: sanitized, experiment-scoped snapshot.
-- `GET /api/frame?experiment=ID&mode=live&worker=IDENTITY&job=JOB_ID`: the selected
-  running worker's recent JPEG or HTTP 204. Worker identity is required; supplying
-  the job ID prevents a newer episode's frame from appearing with older statistics.
-- `mode=demo` on snapshot requests: explicitly labeled synthetic data.
+- `GET /api/snapshot`: combined live dashboard data. An explicit `experiment` query
+  remains supported for integrations; the dashboard never needs it.
+- `GET /api/history?offset=25`: the next 25 saved evaluations across all bot experiments.
+- `GET /api/frame?experiment=ID&worker=IDENTITY&job=JOB_ID`: current worker JPEG.
+- `GET /api/video?experiment=ID&job=JOB_ID`: a saved GridFS recording.
+- `GET /api/control/status`: local process state and bounded console tail.
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 node --check dashboard/app.js
+npm install --prefix /tmp/gulagloop-dashboard-tests --no-save jsdom
+NODE_PATH=/tmp/gulagloop-dashboard-tests/node_modules node --test tests/dashboard_ui.cjs
 ```
 
-Optional interface regression checks use jsdom outside the project (no frontend
-runtime dependency):
-
-```sh
-npm install --prefix /tmp/zombieloop-dashboard-tests --no-save jsdom
-NODE_PATH=/tmp/zombieloop-dashboard-tests/node_modules node --test tests/dashboard_ui.cjs
-```
-
-These check late responses during source changes and pausing, worker/frame matching,
-missing-image and fallback labels, all graph arrow endpoints, and tab/graph controls.
-
-Tests cover freshness, fallback states, statistics, frame exclusion, demo isolation,
-per-persona monitoring documents, and nonfatal database failures. Browser preview
-verifies the layout; a real Windows worker + Atlas + Luminal integration run is
-still required to verify the complete deployment.
+Regression checks cover combined history, isolation of parents/scores/video identities,
+late frames, pause/resume, pagination, keyboard interaction, arrow geometry and safe
+rendering. A Windows worker + Atlas + Luminal run is still needed to verify gameplay.

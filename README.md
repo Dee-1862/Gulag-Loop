@@ -1,4 +1,4 @@
-# Self-Improving Zombies Agents
+# Gulag Loop
 
 **A team of Luminal agents evolves a bot that plays Call of Duty: Black Ops Zombies. The bot's eyes run on the laptop GPU, every strategy and run lives in MongoDB, and improvement is checked on runs the agents never trained on.**
 
@@ -55,7 +55,7 @@ flowchart LR
 | Controller: mouse + keyboard | Rishit | `bot/controller.py` | Built. Executes all 12 strategy params, F8 abort, computes §5.4 diagnostics. **Gate 2 passes** (first autonomous kill on the port) |
 | Worker: job → run → result | Rishit, Deekshith | `bot/worker.py` | Built. Calibrates mouse sensitivity, runs 180 s episodes; claims jobs from MongoDB and auto-proposes generations |
 | Points OCR + game-over detection | Rishit | `bot/hudread.py` | Built (easyocr on fixed 720p crops) |
-| Dashboard | — | — | **Not built** (data and queries exist: `leaderboard()`, `playbook_lineage()`) |
+| Dashboard | Jeffrey | `dashboard/` | Built. Live worker viewport, interactive data flow, agent proposals, and combined MongoDB run history |
 
 ## Repository layout
 
@@ -98,6 +98,8 @@ python -m bot.worker run --experiment exp-kino-1 --propose --generations 8     #
 ```
 
 The worker opens the game in its own Chrome, claims a job from MongoDB, plays a 180 s episode with that strategy, stores the run, and repeats. With `--propose`, when the queue is empty it asks Luminal for the next generation itself. Extra laptops run the same command without `--propose` and share the queue. **The mouse belongs to the game while it runs: F8 aborts (the job goes back in the queue), Esc in game releases the mouse.**
+
+Games that cannot acquire control, lose it in the first five seconds, or close unexpectedly are not scored. The MongoDB worker requeues these jobs and retries, stopping after three consecutive invalid games with the job still queued. Fix game control before restarting.
 
 Detector weights: `config.yaml` first, else `model/zombies_v1.engine` or `model/zombies_v1.pt` (gitignored). Large local files go to `D:/czb` if it exists, else `local_data/` (override with `CZB_DIR`).
 
@@ -145,6 +147,29 @@ A result is `{"job_id", "strategy_id", "worker", "map", "points", "survival_s", 
 
 The memory collections (`episodes`, `lessons`, `situations`, `hud_states`, `working_memory`) and their vector indexes are set up for lesson memory; see [MD files/RESEARCH.md](MD%20files/RESEARCH.md).
 
+## Optional steady-state evolution + MongoDB agent memory (`bot/steady.py`, `bot/agent_memory.py`)
+This is a separate game-laptop command; the dashboard controls still launch the MongoDB generation worker described above.
+
+Every game is one step, so improvement shows game by game instead of every 9-game generation:
+- **Champion/challenger:** a Luminal persona (Tuner → Bold → Defender → Explorer, rotating) proposes a change to the
+  champion. A challenger that beats the champion's mean plays one confirmation game and is promoted only if its
+  2-game mean still wins. The champion is re-evaluated every 5th game so its mean stays honest.
+- **MongoDB is the agents' memory**, using the team's Atlas collections and indexes:
+  - `episodes`: every game gets a 12-dim diagnostics vector (`episodes_vec`). Before each proposal, `$vectorSearch`
+    retrieves the most similar past games (what changed, what happened) into the agent's context.
+  - `lessons`: a promotion writes a *candidate*. The champion's next re-evaluation *validates* or *retires* it in
+    a multi-document transaction with the experiment record. Lessons matching the current situation go to the agent.
+  - `hud_states` time series: every 2 s heartbeat. `$setWindowFields` gives per-game trends.
+  - Each proposed strategy stores `memory_context` (retrieved episode ids, similarities, lessons). A separate
+    dashboard panel on branch `rishit/dashboard-memory` displays it; that panel is not included here.
+- **Results so far (`rishit-steady`, Kino):** baseline mean 378 over 3 games, current champion (Tuner) 450 over 3
+  games (+19%). The best single game scored 2 kills, +410 points, 72 s. Samples are small and single games are noisy.
+
+```bash
+python -m bot.steady --state D:/czb/evo_state/steady.json --minutes 30 --publish   # memory on by default
+python -m tools.steady_report      # champion-mean curve + promotions
+```
+
 ## Tests
 
 | Command | What it checks | Network |
@@ -176,7 +201,7 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 
 - The detector was trained on footage of the original game, not the browser port, and on its teacher's labels rather than ground truth.
 - On the port the detector sees zombies in only ~10% of frames so far; episodes save raw port frames for retraining.
-- No gameplay improvement has been measured yet; all test runs are synthetic.
+- The steady-state results above are a small preliminary gameplay sample, not a controlled benchmark. Automated integration tests use synthetic games.
 - Cluster runs MongoDB 8.0 (Atlas free tier); we make no MongoDB 9.0 performance claims.
 - The game is an unofficial fan port; we link to it and include none of its files.
 
@@ -185,6 +210,6 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 Run `.venv/bin/python -m dashboard.server` and open http://127.0.0.1:8765 to watch
 vision/game telemetry, MongoDB activity, and all four Luminal agents. Install the
 lightweight dependencies with `.venv/bin/python -m pip install -r requirements-dashboard.txt`.
-Use `--demo` for a clearly labeled preview without a game or database connection.
+The dashboard shows the live backend only. All experiments appear together, with one chronological run history and older results available through Load older runs.
 See [dashboard setup and controls](MD%20files/DASHBOARD.md), including the difference
 between pausing dashboard refresh and stopping the game worker.
