@@ -31,6 +31,12 @@ Use `--port 8766` if the default port is already occupied.
 
 ## What each panel shows
 
+- **Data Flow tab:** an interactive map of the game, vision, worker, MongoDB
+  collections, parent selection, four Luminal personas, validation, and job feedback
+  loop. Click a stage or arrow to inspect its inputs and outputs. Observed snapshots
+  and illustrative payloads have separate labels. Use the guided walkthrough,
+  zoom buttons, drag-to-pan, Fit, and Copy JSON. Tab/Enter also select graph items;
+  arrow keys switch dashboard tabs. Open directly at http://127.0.0.1:8765/#flow.
 - **Data flow:** vision worker, MongoDB connection, and Luminal generation status,
   with the strategy/job feedback path back to the game worker.
 - **Worker viewport:** latest annotated 640×360 game thumbnail, loop FPS, confirmed
@@ -48,6 +54,15 @@ queries are bounded to 500 runs/jobs/playbooks and 200 calls, while collection c
 and job-status totals cover the selected experiment. A completed attempt reflects
 provider/validation success; the rationale appears after the orchestrator commits
 its transaction. Prior saved metadata can remain visible while the next call runs.
+
+The Data Flow tab uses this same snapshot and refresh controls. Its architecture
+stays available without a database connection. Arrows describe implemented code
+paths, not measured network transfers, and highlighting follows your selection.
+Parent selection and validation have no independent heartbeat; they are labeled
+as code paths rather than shown as actively running. Validation is grouped visually
+but happens inside each persona's client call. The storage-to-queue arrow represents
+the orchestrator's transaction, not a MongoDB trigger. For a synthetic preview,
+open http://127.0.0.1:8765/?mode=demo#flow.
 
 **Pause pauses only the dashboard's automatic refresh.** It does not stop the bot,
 Luminal calls, database writes, or work in Codex. Use the worker's F8 abort to stop
