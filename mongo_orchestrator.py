@@ -48,8 +48,11 @@ class MongoOrchestrator:
     def baseline_id(self):
         return f"{self.experiment_id}:baseline"
 
-    def init_experiment(self, map_name, notes=None):
-        """Create the experiment, the baseline playbook and two baseline jobs."""
+    def init_experiment(self, map_name, notes=None, seed=None):
+        """Create the experiment, the starting playbook and two evaluation jobs.
+
+        seed: optional {"params", "source", "persona"} to start from (e.g. the team's best strategy)
+        instead of the hand-written baseline."""
         if self.db[EXPERIMENTS].find_one({"_id": self.experiment_id}):
             raise ValueError(f"Experiment {self.experiment_id} already exists")
         now = _now()
@@ -59,9 +62,11 @@ class MongoOrchestrator:
                 "notes": notes, "started_at": now}, session=s)
             self.db[PLAYBOOKS].insert_one({
                 "_id": self.baseline_id(), "experiment_id": self.experiment_id, "arm": ARM,
-                "gen": 0, "generation": 0, "persona": "Baseline", "model": None,
-                "parent": None, "parent_ids": [], "params": BASELINE.model_dump(),
-                "rationale": "Hand-written baseline.", "fallback": False,
+                "gen": 0, "generation": 0, "persona": "Seed" if seed else "Baseline", "model": None,
+                "parent": None, "parent_ids": [],
+                "params": Strategy.model_validate(seed["params"]).model_dump() if seed else BASELINE.model_dump(),
+                "rationale": f"Seeded from {seed['source']}." if seed else "Hand-written baseline.",
+                "fallback": False,
                 "is_best": False, "lesson_ids": [], "created_at": now}, session=s)
             self.db[JOBS].insert_many(
                 [self._job_doc(make_job(self.baseline_id(), 0, "baseline")) for _ in range(2)], session=s)

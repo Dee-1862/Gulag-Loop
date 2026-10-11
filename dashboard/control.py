@@ -87,7 +87,15 @@ class WorkerControl:
             from mongo_orchestrator import MongoOrchestrator
             orch = MongoOrchestrator(experiment)
             if orch.db["experiments"].find_one({"_id": experiment}) is None:
-                orch.init_experiment(map_name, notes="started from the dashboard")
+                # New runs start from the team's best strategy so far (all laptops), not the baseline.
+                seed = None
+                try:
+                    from common.machines import best_strategy
+                    seed = best_strategy()
+                except Exception:
+                    pass
+                orch.init_experiment(map_name, seed=seed,
+                                     notes="started from the dashboard" + (f"; seeded from {seed['source']}" if seed else ""))
             # Jobs this laptop left "running" (crash, closed window) go back in the queue.
             orch.db["jobs"].update_many(
                 {"experiment_id": experiment, "status": "running", "worker": socket.gethostname()},
