@@ -1,6 +1,10 @@
 .gyst/
 .agents/
 .claude/
+.venv/
 .env
-results/selftest/
+.env.*
+!.env.example
 __pycache__/
+outputs/
+results/selftest/

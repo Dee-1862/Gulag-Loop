@@ -1,3 +1,7 @@
+# MongoDB memory layer
 pymongo[srv]>=4.10
 python-dotenv>=1.0
 matplotlib>=3.8
+# Luminal strategy generation
+openai>=3.29,<4
+pydantic>=2.14,<3

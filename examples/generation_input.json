@@ -1,0 +1,67 @@
+{
+  "generation": 2,
+  "parents": [
+    {
+      "strategy_id": "sample-champion",
+      "params": {
+        "det_conf": 0.35,
+        "aim_gain": 0.8,
+        "aim_max_step": 80,
+        "aim_y_offset": 0.15,
+        "fire_radius_px": 25,
+        "burst_ms": 120,
+        "retreat_box_h": 300,
+        "strafe_mode": "none",
+        "strafe_period_s": 2.0,
+        "reload_when_clear_at": 3,
+        "scan_turn_px": 60,
+        "target_rule": "center"
+      },
+      "diagnostics": {
+        "overshoot_rate": 0.58,
+        "avg_frames_to_lock": 14,
+        "close_calls": 41,
+        "retreat_frames": 3,
+        "time_no_target_pct": 37,
+        "death_time_s": 112,
+        "last_5s_summary": "Two zombies at point-blank range while reloading."
+      },
+      "mean_fitness": 640,
+      "evaluation_count": 2
+    },
+    {
+      "strategy_id": "sample-runner-up",
+      "params": {
+        "det_conf": 0.35,
+        "aim_gain": 0.7,
+        "aim_max_step": 80,
+        "aim_y_offset": 0.15,
+        "fire_radius_px": 25,
+        "burst_ms": 120,
+        "retreat_box_h": 300,
+        "strafe_mode": "none",
+        "strafe_period_s": 2.0,
+        "reload_when_clear_at": 3,
+        "scan_turn_px": 60,
+        "target_rule": "center"
+      },
+      "diagnostics": {
+        "overshoot_rate": 0.4,
+        "avg_frames_to_lock": 14,
+        "close_calls": 41,
+        "retreat_frames": 3,
+        "time_no_target_pct": 37,
+        "death_time_s": 112,
+        "last_5s_summary": "Two zombies at point-blank range while reloading."
+      },
+      "mean_fitness": 610,
+      "evaluation_count": 2
+    }
+  ],
+  "history": [
+    {
+      "generation": 1,
+      "best_mean_fitness": 640
+    }
+  ]
+}
