@@ -73,7 +73,7 @@ Each parent requires:
 | `evaluation_count` | Integer >= 1; number of runs represented |
 | `mean_fitness` | Optional finite number; average across evaluations |
 
-Use [examples/generation_input.json](examples/generation_input.json) for a complete
+Use [examples/generation_input.json](../examples/generation_input.json) for a complete
 copyable input. Those values are synthetic. Unknown parent/request fields are
 rejected, so adapt MongoDB documents rather than passing entire documents directly.
 
