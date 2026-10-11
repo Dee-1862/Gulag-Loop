@@ -10,7 +10,7 @@ PARAM_FIELDS = ('det_conf', 'aim_gain', 'aim_max_step', 'aim_y_offset', 'fire_ra
 RECORD_FIELDS = {
     'runs': ('_id','job_id','strategy_id','generation','worker','map','points','survival_s','fitness','diagnostics','completed_at'),
     'jobs': ('job_id','strategy_id','generation','kind','status','worker','created_at','claimed_at','completed_at'),
-    'strategies': ('_id','persona','generation','model','rationale','parent_ids','changed_params','fallback','fallback_source','is_best','created_at'),
+    'strategies': ('_id','persona','generation','model','rationale','parent_ids','changed_params','fallback','fallback_source','is_best','created_at','memory_context'),
     'calls': ('persona','model','generation','strategy_id','ok','attempt','tokens','latency_ms','created_at','error_type','http_status'),
 }
 
@@ -158,7 +158,36 @@ class MongoSource:
                 {'$match': q}, {'$group': {'_id': '$status', 'count': {'$sum': 1}}}])}
             result['footage'] = clean([{k: f.get(k) for k in FOOTAGE_FIELDS if k in f} for f in self.db.footage.find(
                 {**q, 'kind': 'hud_video'}, {k: 1 for k in FOOTAGE_FIELDS}).sort('created_at', -1).limit(24)])
+            result['memory'] = clean(self.memory(experiment_id, playbooks))
             return result
+
+    def memory(self, experiment_id, playbooks):
+        """Agent memory in MongoDB: episodic vectors (Atlas Vector Search), lessons, HUD time series."""
+        arms = self.db.episodes.distinct('arm', {'experiment_id': experiment_id})
+        status = {r['_id']: r['n'] for r in self.db.lessons.aggregate([
+            {'$match': {'$or': [{'experiment_id': experiment_id}, {'arm': {'$in': arms}}]}},
+            {'$group': {'_id': '$status', 'n': {'$sum': 1}}}])}
+        lessons = list(self.db.lessons.find({'$or': [{'experiment_id': experiment_id}, {'arm': {'$in': arms}}]},
+                                            {'_id': 0, 'text': 1, 'status': 1, 'created_at': 1, 'judged_at': 1})
+                       .sort('created_at', -1).limit(6))
+        latest = next((p for p in playbooks if p.get('memory_context')), None)
+        retrieved = []
+        if latest:
+            ids = latest['memory_context'].get('similar_episode_ids') or []
+            sims = dict(zip(ids, latest['memory_context'].get('similarities') or []))
+            for e in self.db.episodes.find({'_id': {'$in': ids}}, {'persona': 1, 'situation': 1, 'outcome': 1, 'changed': 1}):
+                retrieved.append(dict(id=str(e['_id']), persona=e.get('persona'), situation=e.get('situation'),
+                    fitness=(e.get('outcome') or {}).get('fitness'), kills=(e.get('outcome') or {}).get('kills'),
+                    changed=list((e.get('changed') or {}).keys()), similarity=sims.get(e['_id'])))
+            retrieved.sort(key=lambda r: -(r['similarity'] or 0))
+        return dict(
+            episodes=self.db.episodes.count_documents({'arm': {'$in': arms}}) if arms else 0, arms=arms,
+            lessons_by_status=status, lessons=lessons,
+            hud_points=self.db.hud_states.count_documents({'meta.experiment_id': experiment_id}),
+            latest_proposal=dict(strategy_id=str(latest['_id']), persona=latest.get('persona'),
+                                 situation=latest['memory_context'].get('situation'),
+                                 lesson_texts=latest['memory_context'].get('lesson_texts') or [],
+                                 retrieved=retrieved) if latest else None)
 
     def video(self, experiment_id, job_id):
         """Episode recording (MP4 bytes) from the GridFS bucket the bot's publisher writes; None if absent."""

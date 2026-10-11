@@ -75,7 +75,7 @@ async function refresh(){
  try{
   const response=await fetch('/api/snapshot?'+query,{signal:controller.signal});const data=await response.json();
   if(!currentRequest(version,query))return;
-  receivedAt=Date.now();render(data);renderRecordings(data,query);await updateFrame(data,query,version,controller.signal);
+  receivedAt=Date.now();render(data);renderRecordings(data,query);renderMemory(data);await updateFrame(data,query,version,controller.signal);
  }catch{
   if(currentRequest(version,query)){receivedAt=null;render({connected:false,mode:query.get('mode'),error:'Dashboard connection lost or timed out. Check that the local server is running.'});clearFrame();$('frame-label').textContent='NO LIVE FRAME';}
  }finally{
@@ -354,4 +354,19 @@ function enableControl(){
   try{if(!await stopIfRunning(name.trim()))return;showControl(await controlCall('/api/control/start',{experiment:name.trim(),generations:2}));
    const o=document.createElement('option');o.value=name.trim();o.textContent=name.trim();$('experiment').appendChild(o);$('experiment').value=name.trim();$('experiment').dispatchEvent(new Event('change'));}
   catch(e){alert('Could not start: '+e.message);}});
+}
+
+// Agent memory: episodic vectors retrieved with Atlas Vector Search, lessons, HUD time series (all from MongoDB).
+function renderMemory(data){
+ const m=data.memory;if(!m){$('memory-label').textContent='NO MEMORY YET';return;}
+ const ls=m.lessons_by_status||{};
+ $('memory-label').textContent=`${m.episodes||0} EPISODES · ${(ls.validated||0)} VALIDATED LESSONS`;
+ $('memory-stats').innerHTML=[['Episodes (12-dim vectors)',m.episodes],['HUD time-series points',m.hud_points],
+  ['Lessons validated',ls.validated||0],['Lessons candidate',ls.candidate||0],['Lessons retired',ls.retired||0]]
+  .map(([k,v])=>`<div><span>${esc(k)}</span><strong>${fmt(v)}</strong></div>`).join('');
+ const p=m.latest_proposal;
+ $('memory-retrieved').innerHTML=p?`<p class="record-footnote">${esc(p.persona)} proposal · champion situation <b>${esc(p.situation)}</b></p>`+
+  (p.retrieved||[]).map(r=>`<div class="memory-row"><span class="memory-sim">${r.similarity!=null?Number(r.similarity).toFixed(2):'—'}</span><span><b>${esc(r.persona||'?')}</b> · ${esc(r.situation||'')}<small>changed ${esc((r.changed||[]).join(', ')||'—')}</small></span><span>fit ${fmt(r.fitness)} · ${r.kills??'—'} kills</span></div>`).join('')+
+  ((p.lesson_texts||[]).length?`<p class="record-footnote">+ ${p.lesson_texts.length} lesson(s) in context</p>`:''):'<p class="empty">No memory-driven proposal yet.</p>';
+ $('memory-lessons').innerHTML=(m.lessons||[]).length?m.lessons.map(l=>`<div class="memory-row lesson"><span class="record-state ${esc(l.status)}">${esc(l.status)}</span><span>${esc(l.text)}</span></div>`).join(''):'<p class="empty">Lessons appear when a challenger is promoted.</p>';
 }
