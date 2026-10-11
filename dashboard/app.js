@@ -2,9 +2,10 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
 const roles={Bold:['↗','Larger changes. Faster exploration.'],Tuner:['≋','Small adjustments. Precise control.'],Defender:['◇','Survival first. Create space.'],Explorer:['⌖','New targets. Different movement.']};
-let snapshotRequest=null,listRequest=null,requestVersion=0,listVersion=0,listing=false,receivedAt=null;
+let snapshotRequest=null,requestVersion=0,receivedAt=null;
+let historyRows=[],historyLoading=false;
 let snapshot=null,paused=false,loading=false,blobURL=null,selectedPersona=null,controlEnabled=false;
-function params(){return new URLSearchParams({mode:$('mode').value,experiment:$('experiment').value});}
+function params(){return new URLSearchParams({mode:'live'});}
 function ageLabel(value){if(!value||!Number.isFinite(new Date(value).getTime()))return '—';const seconds=Math.max(0,Math.round((Date.now()-new Date(value).getTime())/1000));return seconds<60?`${seconds}s ago`:`${Math.floor(seconds/60)}m ago`;}
 function showNotice(text){$('notice').hidden=!text;$('notice').textContent=text||'';}
 function agents(items=[]){
@@ -14,7 +15,6 @@ function agents(items=[]){
 function openAgent(name){selectedPersona=name;const a=snapshot?.agents?.find(x=>x.persona===name);$('detail-title').textContent=name;$('detail-state').textContent=`${a?.state||'waiting'} · ${a?.tokens!=null?fmt(a.tokens)+' tokens in last recorded attempt':'No usage recorded'}`;$('detail-rationale').textContent=proposalFor(name)?.rationale||'No saved proposal yet. A rationale appears after the orchestrator persists this agent’s result.';$('detail-changes').innerHTML=changesHTML(proposalFor(name));if(!$('detail').open)$('detail').showModal();}
 function clearFrame(){if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
 function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}
-function cancelListing(){listVersion++;listRequest?.abort();listRequest=null;listing=false;}
 function currentRequest(version,query){return version===requestVersion&&query.toString()===params().toString();}
 let rawView=false;
 async function updateFrame(data,query,version,signal){
@@ -22,7 +22,7 @@ async function updateFrame(data,query,version,signal){
  const active=data.workers?.find(w=>w.state==='running');
  // A worker started with --stream (bot/livestream.py) advertises a local MJPEG URL in its heartbeat:
  // show the HUD live (~10-15 fps) instead of the 2 s snapshots.
- const stream=data.mode!=='demo'&&typeof active?.stream==='string'&&/^http:\/\/127\.0\.0\.1:\d+\//.test(active.stream)?active.stream:null;
+ const stream=typeof active?.stream==='string'&&/^http:\/\/127\.0\.0\.1:\d+\//.test(active.stream)?active.stream:null;
  if(stream){
   if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}
   const want=stream+(rawView?'?view=raw':'');
@@ -30,10 +30,10 @@ async function updateFrame(data,query,version,signal){
   $('stream-view').hidden=false;$('stream-view').textContent=rawView?'RAW':'HUD';
   $('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent=rawView?'LIVE STREAM · RAW GAME':'LIVE STREAM · HUD';return;
  }
- if(data.mode==='demo'){clearFrame();$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
  $('frame-label').textContent='NO LIVE FRAME';
  if(!active){clearFrame();return;}
  const frameQuery=new URLSearchParams(query);frameQuery.set('worker',active.identity||active.worker||'');
+ if(active.experiment_id)frameQuery.set('experiment',active.experiment_id);
  if(active.job_id)frameQuery.set('job',active.job_id);
  try{
   const r=await fetch('/api/frame?'+frameQuery,{signal});
@@ -43,20 +43,20 @@ async function updateFrame(data,query,version,signal){
   clearFrame();blobURL=URL.createObjectURL(b);$('frame').src=blobURL;$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='LIVE · 2s CAPTURE';
  }catch{if(currentRequest(version,query)){clearFrame();$('frame-label').textContent='FRAME UNAVAILABLE';}}
 }
-function render(data){snapshot=data;const connected=Boolean(data.connected),demo=data.mode==='demo';
- $('connection').className='pill '+(demo?'demo':connected?'connected':'');$('connection').innerHTML=`<i></i>${paused?'UPDATES PAUSED':demo?'DEMO PREVIEW':connected?'BACKEND CONNECTED':'AWAITING BACKEND'}`;
- $('control-box').hidden=demo||!controlEnabled;
- showNotice(data.error||(demo?'DEMO PREVIEW — synthetic data and a sample game frame. No game, database writes or model calls are running.':''));
- const e=data.experiment||{};$('experiment-name').textContent=e.id||'No experiment';$('map-name').textContent=e.map?e.map.toUpperCase():'Waiting for data';$('generation').textContent=e.generation??'—';$('runs-count').textContent=fmt(data.counts?.runs);
+function render(data){snapshot=data;const connected=Boolean(data.connected);
+ $('connection').className='pill '+(connected?'connected':'');$('connection').innerHTML=`<i></i>${paused?'UPDATES PAUSED':connected?'BACKEND CONNECTED':'AWAITING BACKEND'}`;
+ $('control-box').hidden=!controlEnabled;
+ showNotice(data.error);
+ $('experiment-name').textContent='All run history';$('map-name').textContent='ALL MAPS';$('experiment-count').textContent=fmt(data.experiment_count);$('runs-count').textContent=fmt(data.counts?.runs);
  const worker=data.workers?.find(w=>w.state==='running')||data.workers?.[0],running=worker?.state==='running';
  const active=data.agents?.filter(a=>['running','retrying'].includes(a.state)).length||0,saved=data.agents?.filter(a=>a.proposal||a.rationale).length||0;$('agent-count').textContent=active?active+' / 4 THINKING':saved?saved+' / 4 SAVED':'AWAITING PROPOSALS';
- $('worker-name').textContent=worker?.worker||worker?.identity||'NO WORKER CONNECTED';$('frame-age').textContent=worker?.updated_at?ageLabel(worker.updated_at):'—';$('fps').textContent=fmt(running?worker?.fps:null);$('targets').textContent=fmt(running?worker?.detections:null);$('points').textContent=fmt(worker?.points);$('worker-state').textContent=worker?.state||'Waiting';$('action').textContent=running?worker.action||'PLAYING':'STANDBY';$('elapsed').textContent=worker?.elapsed_s!=null?Math.round(worker.elapsed_s)+'s elapsed':'— elapsed';
+ $('worker-name').textContent=worker?(worker.worker||worker.identity||'Worker')+(worker.experiment_id?' · '+worker.experiment_id:''):'NO WORKER CONNECTED';$('frame-age').textContent=worker?.updated_at?ageLabel(worker.updated_at):'—';$('fps').textContent=fmt(running?worker?.fps:null);$('targets').textContent=fmt(running?worker?.detections:null);$('points').textContent=fmt(worker?.points);$('worker-state').textContent=worker?.state||'Waiting';$('action').textContent=running?worker.action||'PLAYING':'STANDBY';$('elapsed').textContent=worker?.elapsed_s!=null?Math.round(worker.elapsed_s)+'s elapsed':'— elapsed';
  agents(data.agents);if($('detail').open&&selectedPersona)openAgent(selectedPersona);
- $('model-name').textContent=data.model?.split('/').pop()||'No model recorded';const stamp=data.updated_at||receivedAt;$('last-refresh').textContent=(stamp?'Snapshot '+new Date(stamp).toLocaleTimeString():'No snapshot received')+' · '+(paused?'updates paused':demo?'demo data':'updates every 2s');
+ $('model-name').textContent=data.model?.split('/').pop()||'No model recorded';const stamp=data.updated_at||receivedAt;$('last-refresh').textContent=(stamp?'Snapshot '+new Date(stamp).toLocaleTimeString():'No snapshot received')+' · '+(paused?'updates paused':'updates every 2s');
  renderGraph();renderRecords();renderRecordings(data,params());
 }
 async function refresh(){
- if(loading||listing)return;
+ if(loading)return;
  const version=++requestVersion,query=params(),controller=new AbortController();snapshotRequest=controller;
  loading=true;$('refresh').disabled=true;
  const timeout=setTimeout(()=>controller.abort(),12000);
@@ -70,39 +70,16 @@ async function refresh(){
   clearTimeout(timeout);if(version===requestVersion){loading=false;snapshotRequest=null;$('refresh').disabled=false;}
  }
 }
-async function loadExperiments(){
- const version=++listVersion,mode=$('mode').value,previous=$('experiment').value;
- listRequest?.abort();const controller=new AbortController();listRequest=controller;listing=true;
- const timeout=setTimeout(()=>controller.abort(),12000);
- try{
-  const r=await fetch('/api/experiments?mode='+encodeURIComponent(mode),{signal:controller.signal});
-  if(!r.ok)throw new Error('Experiments unavailable');const d=await r.json();
-  if(version!==listVersion||mode!==$('mode').value)return false;
-  $('experiment').innerHTML=(d.experiments||[]).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join('')||'<option value="">No experiments found</option>';
-  if([...$('experiment').options].some(o=>o.value===previous))$('experiment').value=previous;
-  return true;
- }catch{
-  if(version!==listVersion||mode!==$('mode').value)return false;
-  $('experiment').innerHTML='<option value="">Database unavailable</option>';return true;
- }finally{clearTimeout(timeout);if(version===listVersion){listing=false;listRequest=null;}}
-}
-function clearSelection(){cancelSnapshot();cancelListing();clearFrame();receivedAt=null;$('frame-label').textContent='NO LIVE FRAME';render({connected:false,mode:$('mode').value,error:'Loading selected data source…'});}
-$('pause').addEventListener('click',()=>{paused=!paused;if(paused){cancelSnapshot();cancelListing();}$('pause').textContent=paused?'▶ Resume updates':'Ⅱ Pause updates';if(snapshot)render(snapshot);if(!paused)reloadSelection();});
-async function reloadSelection(){cancelSnapshot();if(await loadExperiments())await refresh();}
-$('refresh').addEventListener('click',reloadSelection);
-$('mode').addEventListener('change',async()=>{clearSelection();$('experiment').innerHTML='<option value="">Loading experiments…</option>';const url=new URL(location.href);url.searchParams.set('mode',$('mode').value);history.replaceState(null,'',url.pathname+url.search+url.hash);await reloadSelection();});
-$('experiment').addEventListener('change',()=>{clearSelection();refresh();});
+$('pause').addEventListener('click',()=>{paused=!paused;if(paused)cancelSnapshot();$('pause').textContent=paused?'▶ Resume updates':'Ⅱ Pause updates';if(snapshot)render(snapshot);if(!paused)refresh();});
+$('refresh').addEventListener('click',()=>{cancelSnapshot();refresh();});
 $('close-detail').addEventListener('click',()=>$('detail').close());
-setInterval(()=>{if(!paused&&!listing)refresh();},2000);
+setInterval(()=>{if(!paused)refresh();},2000);
 (async()=>{
- agents();listing=true;
- const requested=new URLSearchParams(location.search).get('mode');
- if(['live','demo'].includes(requested))$('mode').value=requested;
+ agents();
+ const url=new URL(location.href);url.searchParams.delete('mode');url.searchParams.delete('experiment');history.replaceState(null,'',url.pathname+url.search+url.hash);
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
- try{const c=await(await fetch('/api/config',{signal:controller.signal})).json();if(listVersion===0&&!['live','demo'].includes(requested))$('mode').value=c.default_mode==='demo'?'demo':'live';if(c.control)enableControl();}catch{}finally{clearTimeout(timeout);}
- // A user's selection or pause takes precedence over a delayed startup response.
- if(listVersion!==0||paused)return;
- listing=false;if(await loadExperiments()){if(!paused)await refresh();}
+ try{const c=await(await fetch('/api/config',{signal:controller.signal})).json();if(c.control)enableControl();}catch{}finally{clearTimeout(timeout);}
+ if(!paused&&!snapshot)await refresh();
 })();
 
 // Three conceptual layers. Both arrowheads show the implemented return path,
@@ -123,17 +100,17 @@ function flowStatus(id){
  if(!snapshot?.connected||!snapshot?.experiment)return 'no data';
  if(id==='vision')return flowWorker()?.state||'no live worker';
  if(id==='agents')return snapshot.agents?.some(a=>['running','retrying'].includes(a.state))?'generating':'saved context';
- if(id==='mongo')return snapshot.mode==='demo'?'demo memory':'connected';
+ if(id==='mongo')return 'connected';
  return snapshot.agents?.find(a=>a.persona===id)?.state||'waiting';
 }
 function proposalFor(name){
  const a=snapshot?.agents?.find(a=>a.persona===name);
- if(a?.proposal)return a.proposal;
+ if(a&&'proposal' in a)return a.proposal;
  return snapshot?.records?.strategies?.find(s=>s.persona===name)||null;
 }
 function changesFor(strategy){
  if(!strategy)return [];
- const parent=strategy.parent_params||snapshot?.records?.strategies?.find(s=>String(s._id)===String(strategy.parent_ids?.[0]))?.params;
+ const parent=strategy.parent_params||snapshot?.records?.strategies?.find(s=>s.experiment_id===strategy.experiment_id&&String(s._id)===String(strategy.parent_ids?.[0]))?.params;
  const fields=parent?Object.keys(strategy.params||{}).filter(k=>strategy.params[k]!==parent[k]):strategy.changed_params||[];
  return fields.map(key=>({key,before:parent?.[key],after:strategy.params?.[key]}));
 }
@@ -145,7 +122,7 @@ function changesHTML(strategy){
 function flowSelect(kind,id){flowSelection={kind,id};renderGraph();}
 function stageLines(id){
  const s=typeof controlState==='undefined'?{}:controlState;
- if(snapshot?.mode==='demo'||!snapshot?.experiment||s.experiment!==snapshot.experiment.id||s.external)return [];
+ if(!snapshot?.experiment||s.experiment!==(id==='vision'?flowWorker()?.experiment_id:roles[id]?snapshot.agents?.find(a=>a.persona===id)?.experiment_id:s.experiment)||s.external)return [];
  return (s.log_tail||[]).filter(line=>id==='vision'?/detector|capture|calib|gpu|points|survival|job \d|game|fps|SCAN|ENGAGE|RETREAT/i.test(line):id==='mongo'?/mongo|stored|queue|generation.*children/i.test(line):/luminal|generation.*children|propos/i.test(line)).slice(-12);
 }
 function renderGraph(){
@@ -154,8 +131,8 @@ function renderGraph(){
  document.querySelectorAll('[data-layer]').forEach(g=>g.setAttribute('aria-pressed',String(g.dataset.layer===id)));
  document.querySelectorAll('[data-node]').forEach(g=>{const state=flowStatus(g.dataset.node);g.querySelector('.graph-node-state').textContent=state.toUpperCase();g.classList.toggle('selected',g.dataset.node===id);g.setAttribute('aria-pressed',String(g.dataset.node===id));});
  document.querySelectorAll('[data-edge]').forEach(g=>{const e=flowEdges.find(e=>e.id===g.dataset.edge);g.classList.toggle('selected',edge?.id===e.id);g.classList.toggle('related',e.from===id||e.to===id||(id==='agents'&&e.from==='mongo'));g.setAttribute('aria-pressed',String(edge?.id===e.id));});
- const ready=snapshot?.connected&&snapshot?.experiment,demo=snapshot?.mode==='demo';
- $('graph-source').textContent=(demo?'DEMO DATA':ready?'LIVE BACKEND':'WAITING FOR DATA')+(paused?' · UPDATES PAUSED':'');
+ const ready=snapshot?.connected&&snapshot?.experiment;
+ $('graph-source').textContent=(ready?'LIVE BACKEND':'WAITING FOR DATA')+(paused?' · UPDATES PAUSED':'');
  $('inspect-category').textContent=node.lane;$('inspect-title').textContent=edge?`${flowNode(edge.from).title} ↔ ${node.title}`:node.title;
  $('inspect-state').textContent=flowStatus(id).toUpperCase();$('inspect-description').textContent=edge?.description||node.description;
  const w=flowWorker(),run=snapshot?.latest_run,a=snapshot?.agents?.find(a=>a.persona===id),proposal=roles[id]?proposalFor(id):null;
@@ -166,18 +143,18 @@ function renderGraph(){
   document.querySelectorAll('[data-insight-agent]').forEach(b=>b.addEventListener('click',()=>flowSelect('node',b.dataset.insightAgent)));
  }else if(roles[id]){
   const fallback=proposal?.fallback;
-  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>${fallback?'Fallback strategy':proposal?'Suggested for the next round':'Waiting for a proposal'}</h3><p>${esc(proposal?.rationale||'This agent has not saved a proposal for this experiment yet.')}</p></div>${proposal?changesHTML(proposal):''}<p class="record-footnote">${proposal?`Saved generation ${esc(proposal.generation??'—')}. ${fallback?'Source: '+esc(proposal.fallback_source||'fallback')+'. ':''}`:''}${proposal?.evaluations?`${fmt(proposal.mean_fitness)} mean fitness across ${fmt(proposal.evaluations)} recent evaluations. A proposal alone does not establish improvement.`:'These are proposed changes; evaluate them in the game to measure their effect.'}</p>`;
+  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>${fallback?'Fallback strategy':proposal?'Suggested for the next round':'Waiting for a proposal'}</h3><p>${esc(proposal?.rationale||'This agent has not saved a proposal in the saved history yet.')}</p></div>${proposal?changesHTML(proposal):''}<p class="record-footnote">${proposal?`${esc(proposal.experiment_id||'')} · saved generation ${esc(proposal.generation??'—')}. ${fallback?'Source: '+esc(proposal.fallback_source||'fallback')+'. ':''}`:''}${proposal?.evaluations?`${fmt(proposal.mean_fitness)} mean fitness across ${fmt(proposal.evaluations)} recent evaluations. A proposal alone does not establish improvement.`:'These are proposed changes; evaluate them in the game to measure their effect.'}</p>`;
  }else if(id==='vision'){
   const summary=run?.diagnostics?.last_5s_summary;
-  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>What feeds the next strategy</h3><p>${esc(summary|| (run?`${fmt(run.points)} points and ${fmt(run.survival_s)} seconds survived in the latest saved round. Its diagnostics help the agents identify what to change.`:'After a round completes, aim accuracy, target visibility and survival diagnostics give the agents evidence to work with.'))}</p></div>`;
+  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>Latest completed run${run?.experiment_id?' · '+esc(run.experiment_id):''}</h3><p>${esc(summary|| (run?`${fmt(run.points)} points and ${fmt(run.survival_s)} seconds survived in the latest saved round. Its diagnostics help the agents identify what to change.`:'After a round completes, aim accuracy, target visibility and survival diagnostics give the agents evidence to work with.'))}</p></div>`;
  }else{
-  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>Memory makes the loop possible</h3><p>${ready?`${fmt(snapshot.counts?.runs)} saved evaluations inform parent selection. ${fmt(snapshot.jobs?.queued||0)} evaluations are queued and ${fmt(snapshot.jobs?.running||0)} are running.`:'Saved results, strategies and queued evaluations appear when an experiment is selected.'}</p><p>The orchestrator validates all four proposals before saving a new generation. The worker then tests those settings.</p></div>`;
+  $('inspect-insight').innerHTML=`<div class="insight-callout"><h3>Memory makes the loop possible</h3><p>${ready?`${fmt(snapshot.counts?.runs)} saved evaluations inform parent selection. ${fmt(snapshot.jobs?.queued||0)} evaluations are queued and ${fmt(snapshot.jobs?.running||0)} are running.`:'Saved results, strategies and queued evaluations appear when the live backend is connected.'}</p><p>The orchestrator validates all four proposals before saving a new generation. The worker then tests those settings.</p></div>`;
  }
- const lines=stageLines(id);$('console-source').textContent=demo?'DEMO · NO PROCESS':lines.length?'CAPTURED STDOUT':'NO CAPTURED OUTPUT';
+ const lines=stageLines(id);$('console-source').textContent=lines.length?'CAPTURED STDOUT':'NO CAPTURED OUTPUT';
  $('inspect-console').textContent=lines.join('\n')||'No matching console lines captured for this stage.';
- $('console-note').textContent=demo?'Demo mode uses synthetic records. No game process is running.':(roles[id]||id==='agents')?'Generation-level output from the local worker. Per-agent outcomes are shown in saved backend events below.':'Actual stdout from a worker launched by this dashboard for the selected experiment. Remote or externally started workers may not provide console output.';
+ $('console-note').textContent=(roles[id]||id==='agents')?'Generation-level output from the local worker. Per-agent outcomes are shown in saved backend events below.':'Actual stdout from a worker launched by this dashboard across all experiments. Remote or externally started workers may not provide console output.';
  const events=(snapshot?.events||[]).filter(e=>id==='vision'?e.kind==='run':id==='mongo'?e.kind!=='llm':e.kind==='llm'&&(id==='agents'||e.title?.startsWith(id)));
- $('inspect-events').textContent=(demo?'[SYNTHETIC DEMO EVENTS]\n':'[SAVED RECORDS · NOT STDOUT]\n')+(events.slice(0,8).map(e=>`${e.at||'Time not recorded'}  ${e.title}\n${e.detail} · ${e.collection}`).join('\n\n')||'No matching saved events.');
+ $('inspect-events').textContent='[SAVED RECORDS · NOT STDOUT]\n'+(events.slice(0,8).map(e=>`${e.at||'Time not recorded'}  [${e.experiment_id||'unknown experiment'}] ${e.title}\n${e.detail} · ${e.collection}`).join('\n\n')||'No matching saved events.');
  $('inspect-contract').innerHTML=[['Receives',node.reads],['Produces',node.writes],['Code',node.source]].map(([k,v])=>`<div class="contract-row"><strong>${esc(k)}</strong><span>${esc(v)}</span></div>`).join('');
  $('inspect-payload').textContent=JSON.stringify(id==='vision'?w||{}:id==='mongo'?snapshot?.counts||{}:id==='agents'?snapshot?.agents||[]:proposal||a||{},null,2);
 }
@@ -199,6 +176,23 @@ function initFlow(){
 }
 initFlow();
 
+function mergedHistory(recent){
+ const rows=new Map(historyRows.map(r=>[runId(r),r]));recent.forEach(r=>rows.set(runId(r),r));
+ historyRows=[...rows.values()].sort((a,b)=>String(b.completed_at||'').localeCompare(String(a.completed_at||''))||String(b._id||'').localeCompare(String(a._id||'')));
+ return historyRows;
+}
+function renderHistory(runs,total){
+ $('history-count').textContent=`${runs.length} OF ${total} RUNS`;
+ $('run-history').innerHTML=runs.map(r=>`<button class="history-row" data-record-run="${esc(runId(r))}"><span><strong>${esc(r.experiment_id||'Evaluation')}</strong><small>${esc(recordTime(r.completed_at))} · G${esc(r.generation??'—')}</small></span><span>${fmt(r.points)} points</span><span>${fmt(r.survival_s)}s survived</span><span>${fmt(r.fitness)} fitness ↗</span></button>`).join('')||'<p class="empty">Completed runs will appear here automatically.</p>';
+ $('history-more').hidden=runs.length>=total;$('history-more').disabled=historyLoading;
+}
+$('history-more').addEventListener('click',async()=>{
+ if(historyLoading)return;historyLoading=true;$('history-more').disabled=true;
+ try{const r=await fetch('/api/history?offset='+historyRows.length);if(!r.ok)throw new Error();const d=await r.json();mergedHistory(d.runs||[]);renderRecords();}
+ catch{showNotice('Older runs could not be loaded. Try again.');}
+ finally{historyLoading=false;$('history-more').disabled=false;}
+});
+
 // Saved records share the experiment-scoped snapshot and never issue writes.
 let recordScope='';
 const parameterLabels={det_conf:'Detection confidence',aim_gain:'Aim gain',aim_max_step:'Max aim step',aim_y_offset:'Aim height offset',fire_radius_px:'Fire radius (px)',burst_ms:'Burst duration (ms)',retreat_box_h:'Retreat box height',strafe_mode:'Strafe mode',strafe_period_s:'Strafe period (s)',reload_when_clear_at:'Reload threshold',scan_turn_px:'Scan turn (px)',target_rule:'Target rule'};
@@ -206,7 +200,9 @@ const diagnosticLabels={overshoot_rate:'Aim overshoot',time_no_target_pct:'Time 
 function recordTime(value){const d=new Date(value);return value&&Number.isFinite(d.getTime())?d.toLocaleString():'Time not recorded';}
 function shortId(value){const text=String(value||'—');return text.length>25?text.slice(0,12)+'…'+text.slice(-7):text;}
 function recordValue(value){return value==null?'—':typeof value==='number'?String(value):typeof value==='object'?JSON.stringify(value):String(value);}
-function runId(run){return String(run._id||run.job_id||'');}
+function rowKey(exp,id){return JSON.stringify([exp||'',String(id||'')]);}
+function runId(run){return rowKey(run.experiment_id,run._id||run.job_id);}
+function strategyId(strategy){return rowKey(strategy.experiment_id,strategy._id);}
 function syncRecordSelect(id,rows,key,label,empty){
  const select=$(id),previous=select.value;
  const html=rows.map(r=>`<option value="${esc(key(r))}">${esc(label(r))}</option>`).join('')||`<option value="">${esc(empty)}</option>`;
@@ -214,25 +210,25 @@ function syncRecordSelect(id,rows,key,label,empty){
  if(!rows.some(r=>key(r)===select.value))select.value=rows.length?key(rows[0]):'';
  return rows.find(r=>key(r)===select.value)||null;
 }
-function strategyLink(id,records,label){
+function strategyLink(id,records,label,experiment){
  if(!id)return '<span>Not recorded</span>';
- const found=records.strategies?.some(s=>String(s._id)===String(id));
- return found?`<button class="record-link" data-record-strategy="${esc(id)}" title="${esc(id)}">${esc(label||shortId(id))} ↗</button>`:`<span class="record-meta" title="${esc(id)}">${esc(label||shortId(id))} · outside recent strategy window</span>`;
+ const found=records.strategies?.some(s=>String(s._id)===String(id)&&s.experiment_id===experiment);
+ return found?`<button class="record-link" data-record-strategy="${esc(rowKey(experiment,id))}" title="${esc(id)}">${esc(label||shortId(id))} ↗</button>`:`<span class="record-meta" title="${esc(id)}">${esc(label||shortId(id))} · outside recent strategy window</span>`;
 }
 function renderRecords(){
- const data=snapshot||{},records=data.records||{},runs=records.runs||[],strategies=records.strategies||[],jobs=records.jobs||[],calls=records.calls||[];
- const scope=(data.mode||'live')+':'+(data.experiment?.id||'');
+ const data=snapshot||{},records=data.records||{},runs=data.connected?mergedHistory(records.runs||[]):[],strategies=records.strategies||[],jobs=records.jobs||[],calls=records.calls||[];
+ const scope=data.connected?'all':'offline';
  if(scope!==recordScope){$('record-run').value='';$('record-strategy').value='';recordScope=scope;}
- const demo=data.mode==='demo',ready=data.connected&&data.experiment;
- $('records-source').textContent=(demo?'DEMO RECORDS':ready?'MONGODB · READ ONLY':'NO EXPERIMENT DATA')+(paused?' · PAUSED':'');
- $('records-meta').textContent=ready?`${data.experiment.id} · ${data.experiment.map} · Generation ${data.experiment.generation}${data.experiment.started_at?' · Started '+recordTime(data.experiment.started_at):''}`:'Select a connected experiment to inspect its saved records.';
+ const ready=data.connected&&data.experiment;
+ $('records-source').textContent=(ready?'MONGODB · READ ONLY':'NO EXPERIMENT DATA')+(paused?' · PAUSED':'');
+ $('records-meta').textContent=ready?'All experiments · newest results first · records keep their original experiment labels.':'Waiting for the live backend.';renderHistory(runs,data.counts?.runs||0);
  $('record-total-runs').textContent=fmt(data.counts?.runs);$('record-total-strategies').textContent=fmt(data.counts?.playbooks);$('record-queue-summary').textContent=`${fmt(data.jobs?.queued||0)} queued · ${fmt(data.jobs?.running||0)} running`;
- const run=syncRecordSelect('record-run',runs,runId,r=>`G${r.generation??'—'} · ${fmt(r.fitness)} fitness · ${shortId(runId(r))}`,'No saved runs');
+ const run=syncRecordSelect('record-run',runs,runId,r=>`${r.experiment_id||'Run'} · ${recordTime(r.completed_at)} · ${fmt(r.fitness)} fitness`,'No saved runs');
  $('saved-run-empty').hidden=Boolean(run);$('saved-run-content').hidden=!run;
  if(run){
   $('saved-points').textContent=fmt(run.points);$('saved-survival').textContent=fmt(run.survival_s)+'s';$('saved-fitness').textContent=fmt(run.fitness);
-  $('saved-run-meta').textContent=`${run.worker||'Worker not recorded'} · ${recordTime(run.completed_at)} · ${runId(run)}`;
-  $('saved-run-strategy').innerHTML=strategyLink(run.strategy_id,records,'Inspect run strategy');
+  $('saved-run-meta').textContent=`${run.experiment_id||''} · ${run.worker||'Worker not recorded'} · ${recordTime(run.completed_at)} · ${runId(run)}`;
+  $('saved-run-strategy').innerHTML=strategyLink(run.strategy_id,records,'Inspect run strategy',run.experiment_id);
   const diagnostics=run.diagnostics||{};
   $('saved-diagnostics').innerHTML=['time_no_target_pct','det_count_avg','loop_fps','overshoot_rate','shots_fired','hits_proxy'].map(key=>{
    const raw=diagnostics[key];let value=recordValue(raw);
@@ -242,26 +238,26 @@ function renderRecords(){
   $('saved-summary').textContent=diagnostics.last_5s_summary||'No final-seconds summary was saved for this run.';
   $('saved-all-diagnostics').innerHTML=Object.entries(diagnostics).filter(([k])=>k!=='last_5s_summary').map(([key,value])=>`<div><dt title="${esc(key)}">${esc(diagnosticLabels[key]||key.replaceAll('_',' '))}</dt><dd>${esc(recordValue(value))}${key==='overshoot_rate'?' (fraction)':key==='time_no_target_pct'?'%':''}</dd></div>`).join('')||'<div><dt>No diagnostics saved</dt></div>';
  }
- const strategy=syncRecordSelect('record-strategy',strategies,s=>String(s._id),s=>`${s.persona||'Strategy'} · G${s.generation??'—'} · ${shortId(s._id)}`,'No saved strategies');
+ const strategy=syncRecordSelect('record-strategy',strategies,strategyId,s=>`${s.experiment_id||''} · ${s.persona||'Strategy'} · G${s.generation??'—'} · ${shortId(s._id)}`,'No saved strategies');
  $('saved-strategy-empty').hidden=Boolean(strategy);$('saved-strategy-content').hidden=!strategy;
  if(strategy){
   $('saved-strategy-source').textContent=strategy.fallback?'FALLBACK · '+(strategy.fallback_source||'source not recorded').replaceAll('_',' ').toUpperCase():strategy.persona==='Baseline'?'HAND-WRITTEN BASELINE':strategy.model?'MODEL PROPOSAL':'SAVED STRATEGY';
   $('saved-strategy-score').textContent=strategy.evaluations?`${fmt(strategy.mean_fitness)} mean fitness · ${fmt(strategy.evaluations)} evaluation${strategy.evaluations===1?'':'s'}`:'Not evaluated in the recent run sample';
   $('saved-strategy-id').textContent=String(strategy._id);$('saved-changes').innerHTML=changesHTML(strategy);$('saved-rationale').textContent=strategy.rationale||'No rationale saved.';
   $('saved-params').innerHTML=Object.entries(strategy.params||{}).map(([key,value])=>`<div class="strategy-param ${strategy.changed_params?.includes(key)?'changed':''}"><span title="${esc(key)}">${esc(parameterLabels[key]||key)}</span><strong>${esc(recordValue(value))}</strong></div>`).join('')||'<p class="record-meta">No settings saved.</p>';
-  $('saved-parents').innerHTML=strategy.parent_ids?.length?strategy.parent_ids.map(id=>strategyLink(id,records)).join(''):'<span>No parents recorded · baseline or root strategy</span>';
+  $('saved-parents').innerHTML=strategy.parent_ids?.length?strategy.parent_ids.map(id=>strategyLink(id,records,null,strategy.experiment_id)).join(''):'<span>No parents recorded · baseline or root strategy</span>';
  }
  const statuses=data.jobs||{},unfinished=Object.entries(statuses).filter(([status])=>status!=='done').reduce((n,[,count])=>n+count,0),total=Object.values(statuses).reduce((n,count)=>n+count,0);
- $('queue-readiness').textContent=!ready?'Queue data is unavailable.':!total?'No evaluation jobs recorded yet.':unfinished?`${unfinished} evaluation${unfinished===1?' remains':'s remain'} before the next generation can be proposed (${statuses.queued||0} queued, ${statuses.running||0} running).`:(data.counts?.runs||0)>0?'All recorded evaluations are complete. The orchestrator can propose the next generation.':'Jobs are complete; waiting for saved run results.';
+ $('queue-readiness').textContent=ready?`${statuses.queued||0} queued · ${statuses.running||0} running · ${statuses.done||0} done across all experiments. Generations advance independently within each experiment.`:'Queue data is unavailable.';
  const jobFilter=$('record-job-filter').value,visibleJobs=jobs.filter(j=>jobFilter==='all'||j.status===jobFilter);
  $('saved-jobs').innerHTML=visibleJobs.map(job=>{
-  const savedRun=runs.find(r=>r.job_id===job.job_id),at=job.completed_at||job.claimed_at||job.created_at;
+  const savedRun=runs.find(r=>r.job_id===job.job_id&&r.experiment_id===job.experiment_id),at=job.completed_at||job.claimed_at||job.created_at;
   const jobLabel=savedRun?`<button class="record-link" data-record-run="${esc(runId(savedRun))}" title="${esc(job.job_id)}">${esc(shortId(job.job_id))} ↗</button>`:`<span title="${esc(job.job_id)}">${esc(shortId(job.job_id))}</span>`;
-  return `<tr><td><span class="record-state ${esc(job.status)}">${esc(job.status||'unknown')}</span></td><td>${jobLabel}<small>${esc((job.kind||'evaluation').replaceAll('_',' '))}</small></td><td>${esc(job.generation??'—')}</td><td>${strategyLink(job.strategy_id,records)}</td><td>${esc(job.worker||'Unclaimed')}</td><td title="${esc(recordTime(at))}">${esc(ageLabel(at))}</td></tr>`;
+  return `<tr><td><span class="record-state ${esc(job.status)}">${esc(job.status||'unknown')}</span></td><td>${jobLabel}<small>${esc(job.experiment_id||'')} · ${esc((job.kind||'evaluation').replaceAll('_',' '))}</small></td><td>${esc(job.generation??'—')}</td><td>${strategyLink(job.strategy_id,records,null,job.experiment_id)}</td><td>${esc(job.worker||'Unclaimed')}</td><td title="${esc(recordTime(at))}">${esc(ageLabel(at))}</td></tr>`;
  }).join('')||'<tr><td colspan="6" class="empty">No matching jobs in the recent records.</td></tr>';
- $('saved-jobs-note').textContent=`Showing ${visibleJobs.length} matching jobs from the latest ${jobs.length} returned (maximum 50). Queue totals above cover the entire experiment. Select a completed job to inspect its saved run.`;
+ $('saved-jobs-note').textContent=`Showing ${visibleJobs.length} matching jobs from the latest ${jobs.length} returned (maximum 50). Queue totals above cover all experiments. Select a completed job to inspect its saved run.`;
  $('saved-calls-count').textContent=`${data.counts?.llm_calls??0} RECORDED`;
- $('saved-calls').innerHTML=calls.map(call=>`<tr><td>${esc(call.persona||'Unknown')}<small>${esc(call.model||'Model not recorded')}</small></td><td>${esc(call.generation??'—')}</td><td><span class="record-state ${call.ok?'validated':'failed'}">${call.ok?'Validated':'Failed'}</span>${call.error_type?`<small>${esc(call.error_type)}</small>`:''}</td><td>${esc(call.attempt??'—')}</td><td>${call.latency_ms!=null?fmt(call.latency_ms/1000)+'s':'—'}</td><td>${fmt(call.tokens?.total_tokens)}</td><td title="${esc(recordTime(call.created_at))}">${esc(ageLabel(call.created_at))}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No Luminal calls saved for this experiment yet.</td></tr>';
+ $('saved-calls').innerHTML=calls.map(call=>`<tr><td>${esc(call.persona||'Unknown')}<small>${esc(call.experiment_id||'')} · ${esc(call.model||'Model not recorded')}</small></td><td>${esc(call.generation??'—')}</td><td><span class="record-state ${call.ok?'validated':'failed'}">${call.ok?'Validated':'Failed'}</span>${call.error_type?`<small>${esc(call.error_type)}</small>`:''}</td><td>${esc(call.attempt??'—')}</td><td>${call.latency_ms!=null?fmt(call.latency_ms/1000)+'s':'—'}</td><td>${fmt(call.tokens?.total_tokens)}</td><td title="${esc(recordTime(call.created_at))}">${esc(ageLabel(call.created_at))}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No Luminal calls saved in the saved history yet.</td></tr>';
 }
 $('record-run').addEventListener('change',renderRecords);$('record-strategy').addEventListener('change',renderRecords);$('record-job-filter').addEventListener('change',renderRecords);
 $('view-records').addEventListener('click',event=>{
@@ -272,22 +268,22 @@ $('view-records').addEventListener('click',event=>{
 // Episode recordings: MP4s the bot publisher stores in GridFS ('footage'), streamed by /api/video with Range support.
 let recordingKey='',recordingJob='';
 function renderRecordings(data,query){
- const items=data.footage||[],personas={};(data.records?.strategies||[]).forEach(s=>personas[String(s._id)]=s.persona);
+ const items=data.footage||[],personas={};(data.records?.strategies||[]).forEach(s=>personas[strategyId(s)]=s.persona);
  $('recordings-count').textContent=`${items.length} SAVED`;
- const key=(query.get('mode')||'live')+':'+(query.get('experiment')||'')+'|'+items.map(f=>f.job_id).join(',');
+ const key=(query.get('mode')||'live')+':'+(query.get('experiment')||'')+'|'+items.map(f=>rowKey(f.experiment_id,f.job_id)).join(',');
  if(key===recordingKey)return;
  const sameExperiment=recordingKey.split('|')[0]===key.split('|')[0];recordingKey=key;
- if(!sameExperiment||!items.some(f=>f.job_id===recordingJob)){ // a different experiment: never keep its old video
+ if(!sameExperiment||!items.some(f=>rowKey(f.experiment_id,f.job_id)===recordingJob)){ // a different experiment: never keep its old video
   recordingJob='';const v=$('recording');v.pause();v.removeAttribute('src');v.load();v.hidden=true;$('recording-empty').hidden=false;
-  $('recording-caption').textContent='Recordings appear when a worker publishes footage for this experiment.';}
- if(!items.length){$('recordings-list').innerHTML='<p class="empty">No recordings for this experiment yet.</p>';return;}
- $('recordings-list').innerHTML=items.map(f=>{const who=personas[String(f.strategy_id)]||String(f.strategy_id||'').split(':').pop();
-  return `<button class="recording-item${f.job_id===recordingJob?' selected':''}" data-job="${esc(f.job_id)}"><span><b>${esc(who)}</b><small>gen ${esc(f.generation??0)} · ${esc(String(f.job_id).slice(0,8))}</small></span><span>${fmt(f.points)} pts · ${esc(f.kills??'—')} kills</span><span>${fmt(f.survival_s)}s · fit ${fmt(f.fitness)}</span></button>`;}).join('');
+  $('recording-caption').textContent='Recordings appear when a worker publishes footage across all experiments.';}
+ if(!items.length){$('recordings-list').innerHTML='<p class="empty">No recordings in the saved history yet.</p>';return;}
+ $('recordings-list').innerHTML=items.map(f=>{const who=personas[rowKey(f.experiment_id,f.strategy_id)]||String(f.strategy_id||'').split(':').pop();
+  return `<button class="recording-item${rowKey(f.experiment_id,f.job_id)===recordingJob?' selected':''}" data-job="${esc(rowKey(f.experiment_id,f.job_id))}"><span><b>${esc(who)}</b><small>${esc(f.experiment_id||'')} · gen ${esc(f.generation??0)} · ${esc(String(f.job_id).slice(0,8))}</small></span><span>${fmt(f.points)} pts · ${esc(f.kills??'—')} kills</span><span>${fmt(f.survival_s)}s · fit ${fmt(f.fitness)}</span></button>`;}).join('');
  document.querySelectorAll('.recording-item').forEach(b=>b.addEventListener('click',()=>{
   recordingJob=b.dataset.job;document.querySelectorAll('.recording-item').forEach(x=>x.classList.toggle('selected',x===b));
-  const q=new URLSearchParams({mode:query.get('mode')||'live',experiment:query.get('experiment')||'',job:recordingJob});
+  const [experiment,job]=JSON.parse(recordingJob);const q=new URLSearchParams({mode:'live',experiment,job});
   const v=$('recording');v.src='/api/video?'+q;v.hidden=false;$('recording-empty').hidden=true;v.play().catch(()=>{});
-  $('recording-caption').textContent=`Job ${recordingJob} · annotated HUD view recorded by the vision worker`;}));
+  $('recording-caption').textContent=`${experiment} · job ${job} · annotated recording`;}));
 }
 
 // Fullscreen game view: the whole viewport (stream + overlays) fills the screen; Esc exits.
@@ -305,7 +301,7 @@ renderGraph();renderRecords();
 async function stopIfRunning(target){
  // One bot at a time (RAM): offer to stop the current one before starting another.
  if(!controlState.running)return true;
- if(controlState.experiment===target){alert(`The bot is already running on ${target}. Select it in the dropdown to watch.`);return false;}
+ if(controlState.experiment===target){alert(`The bot is already running on ${target}.`);return false;}
  if(!confirm(`The bot is running on ${controlState.experiment||'another experiment'}.
 Stop it and start ${target}?`))return false;
  showControl(await controlCall('/api/control/stop'));return true;
@@ -314,18 +310,16 @@ function showControl(s){controlState=s||{};
  const box=$('control-status');box.hidden=false;
  const tail=(s.log_tail||[]).slice(-1)[0]||'';
  box.textContent=s.running?`● Bot running on ${s.experiment} (pid ${s.pid})${tail?' · '+tail.replace(/^\[[^\]]*\]\s*/,'').slice(0,110):''}`
-  :s.experiment?`Bot stopped${s.exit_code!=null?' (exit '+s.exit_code+')':''} · ${s.experiment}`:'Bot idle · pick an experiment and press ▶ Run bot';
- renderGraph();box.classList.toggle('running',!!s.running);$('run-bot').disabled=false;$('stop-bot').disabled=!s.running;
+  :s.experiment?`Bot stopped${s.exit_code!=null?' (exit '+s.exit_code+')':''} · ${s.experiment}`:'Bot idle · use New run to start a game';
+ renderGraph();box.classList.toggle('running',!!s.running);$('stop-bot').disabled=!s.running;
 }
 async function pollControl(){try{showControl(await(await fetch('/api/control/status')).json());}catch{}}
 function enableControl(){
- if(controlTimer)return;controlEnabled=true;$('control-box').hidden=$('mode').value==='demo';pollControl();controlTimer=setInterval(pollControl,3000);
- $('run-bot').addEventListener('click',async()=>{if($('mode').value==='demo')return;const exp=$('experiment').value;if(!exp){alert('Select an experiment first, or press + New run.');return;}
-  try{if(!await stopIfRunning(exp))return;showControl({running:true,experiment:exp,pid:'…'});showControl(await controlCall('/api/control/start',{experiment:exp,generations:2}));}catch(e){alert('Could not start: '+e.message);pollControl();}});
- $('stop-bot').addEventListener('click',async()=>{if($('mode').value==='demo')return;try{showControl(await controlCall('/api/control/stop'));}catch(e){alert('Could not stop: '+e.message);}});
- $('new-run').addEventListener('click',async()=>{if($('mode').value==='demo')return;const d=new Date(),p=n=>String(n).padStart(2,'0');
+ if(controlTimer)return;controlEnabled=true;$('control-box').hidden=false;pollControl();controlTimer=setInterval(pollControl,3000);
+ $('stop-bot').addEventListener('click',async()=>{try{showControl(await controlCall('/api/control/stop'));}catch(e){alert('Could not stop: '+e.message);}});
+ $('new-run').addEventListener('click',async()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');
   const name=prompt('Name for the new experiment:',`exp-kino-${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`);if(!name)return;
   try{if(!await stopIfRunning(name.trim()))return;showControl(await controlCall('/api/control/start',{experiment:name.trim(),generations:2}));
-   const o=document.createElement('option');o.value=name.trim();o.textContent=name.trim();$('experiment').appendChild(o);$('experiment').value=name.trim();$('experiment').dispatchEvent(new Event('change'));}
+   cancelSnapshot();refresh();}
   catch(e){alert('Could not start: '+e.message);}});
 }

@@ -7,7 +7,7 @@ const {JSDOM}=require('jsdom');
 const root=path.resolve(__dirname,'..');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function harness(t){
- const dom=new JSDOM(fs.readFileSync(path.join(root,'dashboard/index.html'),'utf8'),{url:'http://localhost/?mode=live#flow',runScripts:'outside-only',pretendToBeVisual:true});
+ const dom=new JSDOM(fs.readFileSync(path.join(root,'dashboard/index.html'),'utf8'),{url:'http://localhost/?mode=demo&experiment=old#flow',runScripts:'outside-only',pretendToBeVisual:true});
  const w=dom.window,d=w.document,requests=[];
  w.setInterval=()=>0;
  w.HTMLMediaElement.prototype.pause=function(){};w.HTMLMediaElement.prototype.load=function(){};w.HTMLMediaElement.prototype.play=async function(){};
@@ -19,57 +19,39 @@ function harness(t){
  const get=id=>d.getElementById(id),click=id=>get(id).click();
  const respond=(prefix,data,{status=200}={})=>{const i=requests.findIndex(r=>r.url.startsWith(prefix));assert.ok(i>=0,'Expected request '+prefix);const request=requests.splice(i,1)[0];request.resolve({ok:status<400,status,json:async()=>data,blob:async()=>new w.Blob(['image'])});return request;};
  const change=(id,value)=>{get(id).value=value;get(id).dispatchEvent(new w.Event('change'));};
- const start=async()=>{respond('/api/config',{default_mode:'live'});await settle();respond('/api/experiments',{experiments:[{id:'a'},{id:'b'}]});await settle();};
+ const start=async()=>{respond('/api/config',{default_mode:'live'});await settle();};
  return {w,d,requests,get,click,respond,change,start};
 }
 function data(id='a',mode='live'){
  return {mode,connected:true,experiment:{id,map:'kino',generation:3},updated_at:'2026-10-11T12:00:00Z',counts:{jobs:5,runs:4,playbooks:5,llm_calls:4},jobs:{queued:1,done:4},agents:[{persona:'Bold',state:'fallback',generation:3}],workers:[]};
 }
-test('late snapshot cannot replace a newly selected data source',async t=>{
+test('dashboard is Gulag Loop and always requests unified live history, even from an old demo link',async t=>{
  const h=harness(t);await h.start();
- h.change('mode','demo');
- h.respond('/api/snapshot',data('old-live'));await settle();
- assert.notEqual(h.get('experiment-name').textContent,'old-live');
- h.respond('/api/experiments',{experiments:[{id:'demo-kino'}]});await settle();
- h.respond('/api/snapshot',data('demo-kino','demo'));await settle();
- assert.equal(h.get('experiment-name').textContent,'demo-kino');
- assert.match(h.get('connection').textContent,/DEMO/);
- assert.equal(h.get('frame-label').textContent,'SAMPLE CAPTURE');
- assert.match(h.w.location.search,/mode=demo/);
+ assert.match(h.d.title,/Gulag Loop/);assert.equal(h.get('mode'),null);assert.equal(h.get('experiment'),null);
+ assert.equal(h.w.location.search,'');assert.equal(h.requests.some(r=>r.url.startsWith('/api/experiments')),false);
+ const request=h.requests.find(r=>r.url.startsWith('/api/snapshot'));
+ assert.equal(request.url,'/api/snapshot?mode=live');
+ h.respond('/api/snapshot',{...data('all'),experiment_count:3});await settle();
+ assert.equal(h.get('experiment-name').textContent,'All run history');assert.equal(h.get('experiment-count').textContent,'3');
 });
 test('pause rejects in-flight responses and manual refresh still works',async t=>{
  const h=harness(t);await h.start();h.click('pause');
  h.respond('/api/snapshot',data('late'));await settle();
  assert.notEqual(h.get('experiment-name').textContent,'late');
- h.click('refresh');h.respond('/api/experiments',{experiments:[{id:'a'}]});await settle();
+ h.click('refresh');
  h.respond('/api/snapshot',data());await settle();
- assert.equal(h.get('experiment-name').textContent,'a');
+ assert.equal(h.get('experiment-name').textContent,'All run history');
  assert.match(h.get('connection').textContent,/PAUSED/);
  assert.match(h.get('last-refresh').textContent,/paused/);
 });
-test('late frame cannot replace demo image; frame request identifies worker and job',async t=>{
+test('frame request uses the active worker experiment and rejects a late frame after refresh',async t=>{
  const h=harness(t);await h.start();
- h.respond('/api/snapshot',{...data(),workers:[{identity:'worker-a',job_id:'job-a',state:'running',elapsed_s:240}]});await settle();
+ h.respond('/api/snapshot',{...data(),workers:[{experiment_id:'origin-a',identity:'worker-a',job_id:'job-a',state:'running',elapsed_s:240}]});await settle();
  const frame=h.requests.find(r=>r.url.startsWith('/api/frame'));
- assert.ok(frame.url.includes('worker=worker-a'));assert.ok(frame.url.includes('job=job-a'));
+ assert.ok(frame.url.includes('experiment=origin-a'));assert.ok(frame.url.includes('worker=worker-a'));assert.ok(frame.url.includes('job=job-a'));
  assert.equal(h.get('elapsed').textContent,'240s elapsed');
- h.change('mode','demo');h.respond('/api/experiments',{experiments:[{id:'demo-kino'}]});await settle();
- h.respond('/api/snapshot',data('demo-kino','demo'));await settle();
- h.respond('/api/frame',{});await settle();
- assert.equal(h.get('frame').getAttribute('src'),'/demo-frame.jpg');
-});
-test('late experiment list and startup config cannot overwrite a user selection',async t=>{
- const h=harness(t);
- h.change('mode','demo');
- h.respond('/api/config',{default_mode:'live'});await settle();
- assert.equal(h.get('mode').value,'demo');
- h.change('mode','live');
- h.respond('/api/experiments',{experiments:[{id:'wrong-demo'}]});await settle();
- assert.notEqual(h.get('experiment').value,'wrong-demo');
- h.respond('/api/experiments',{}, {status:503});await settle();
- assert.match(h.get('experiment').textContent,/Database unavailable/);
- h.respond('/api/snapshot',{connected:true,mode:'live',error:'Select an experiment'});await settle();
- assert.match(h.get('connection').textContent,/CONNECTED/);
+ h.click('pause');h.click('pause');h.respond('/api/snapshot',data());await settle();h.respond('/api/frame',{});await settle();
+ assert.equal(h.get('frame').hidden,true);
 });
 test('missing frame is not labeled live; fallback summary is visible',async t=>{
  const h=harness(t);await h.start();
@@ -105,10 +87,10 @@ test('MongoDB records show saved results without live workers and preserve inspe
  assert.match(h.get('saved-diagnostics').textContent,/97.6%/);assert.match(h.get('saved-diagnostics').textContent,/0%/);
  assert.equal(h.get('saved-rationale').querySelector('img'),null);
  assert.match(h.get('saved-calls').textContent,/No Luminal calls/);
- h.get('saved-parents').querySelector('button').click();assert.equal(h.get('record-strategy').value,'baseline');
+ h.get('saved-parents').querySelector('button').click();assert.equal(h.get('record-strategy').value,JSON.stringify(['','baseline']));
  assert.match(h.get('saved-params').textContent,/0.8/);assert.match(h.get('saved-params').textContent,/0.35/);assert.match(h.get('saved-params').textContent,/0.15/);assert.match(h.get('saved-diagnostics').textContent,/0.02/);
  h.change('record-job-filter','queued');assert.equal(h.get('saved-jobs').querySelectorAll('tr').length,1);assert.match(h.get('saved-jobs').textContent,/job-2/);
- h.w.eval('render('+JSON.stringify(snapshot)+')');assert.equal(h.get('record-strategy').value,'baseline');
+ h.w.eval('render('+JSON.stringify(snapshot)+')');assert.equal(h.get('record-strategy').value,JSON.stringify(['','baseline']));
  assert.equal(h.get('record-job-filter').value,'queued');
  h.get('tab-flow').dispatchEvent(new h.w.KeyboardEvent('keydown',{key:'End'}));assert.equal(h.get('tab-records').getAttribute('aria-selected'),'true');
  h.w.eval('render({connected:false,mode:"live"})');assert.equal(h.get('saved-run-content').hidden,true);assert.equal(h.get('saved-strategy-content').hidden,true);
@@ -118,7 +100,7 @@ test('MongoDB records show saved results without live workers and preserve inspe
 test('flow shows exact parent differences, escaped rationales, and experiment-scoped stdout',async t=>{
  const h=harness(t);await h.start();
  const proposal={_id:'child',persona:'Defender',generation:2,parent_ids:['parent'],parent_params:{aim_gain:.8,strafe_mode:'none'},params:{aim_gain:.72,strafe_mode:'alternate'},rationale:'<img src=x onerror=alert(1)> survive longer',evaluations:0};
- h.respond('/api/snapshot',{...data(),agents:[{persona:'Defender',state:'complete',generation:2,proposal}]});await settle();
+ h.respond('/api/snapshot',{...data(),agents:[{persona:'Defender',experiment_id:'a',state:'complete',generation:2,proposal}]});await settle();
  h.w.eval('showControl('+JSON.stringify({experiment:'a',log_tail:['[12:01] queue empty: asking Luminal for generation 2','[12:02] stored in MongoDB','[12:03] capture backend ready']})+')');
  h.d.querySelector('[data-node="Defender"]').dispatchEvent(new h.w.MouseEvent('click'));
  assert.match(h.get('inspect-insight').textContent,/0.8/);assert.match(h.get('inspect-insight').textContent,/0.72/);
@@ -126,23 +108,33 @@ test('flow shows exact parent differences, escaped rationales, and experiment-sc
  assert.doesNotMatch(h.get('inspect-console').textContent,/capture backend/);assert.match(h.get('console-source').textContent,/STDOUT/);
  h.w.eval('showControl('+JSON.stringify({experiment:'other',log_tail:['private other run']})+')');
  assert.doesNotMatch(h.get('inspect-console').textContent,/private other run/);assert.match(h.get('console-source').textContent,/NO CAPTURED/);
- h.w.eval('render('+JSON.stringify({...data('a','demo'),agents:[{persona:'Defender',proposal}]})+')');
- assert.match(h.get('console-source').textContent,/DEMO/);assert.match(h.get('inspect-events').textContent,/SYNTHETIC/);
+
 });
-test('recording selection clears immediately when the experiment changes',async t=>{
+test('recordings with the same job name retain their original experiment',async t=>{
  const h=harness(t);await h.start();
- h.respond('/api/snapshot',{...data(),footage:[{job_id:'video-a',strategy_id:'baseline',points:10}]});await settle();
- h.d.querySelector('.recording-item').click();assert.equal(h.get('recording').hidden,false);
- assert.match(h.get('recording').getAttribute('src'),/experiment=a/);
- h.change('experiment','b');assert.equal(h.get('recording').hidden,true);assert.equal(h.get('recording').hasAttribute('src'),false);
- assert.equal(h.d.querySelectorAll('.recording-item').length,0);
+ h.respond('/api/snapshot',{...data(),footage:[{experiment_id:'a',job_id:'same-job',points:10},{experiment_id:'b',job_id:'same-job',points:20}]});await settle();
+ const videos=h.d.querySelectorAll('.recording-item');videos[1].click();
+ assert.match(h.get('recording').getAttribute('src'),/experiment=b/);assert.match(h.get('recording').getAttribute('src'),/job=same-job/);
+ h.w.eval('render({connected:false,mode:"live"})');assert.equal(h.get('recording').hidden,true);assert.equal(h.get('recording').hasAttribute('src'),false);
 });
-test('all three layer backgrounds are interactive and demo cannot start a real worker',async t=>{
+test('all three layer backgrounds are interactive',async t=>{
  const h=harness(t);await h.start();h.respond('/api/snapshot',data());await settle();
  const layer=h.d.querySelector('[data-layer="agents"]');layer.dispatchEvent(new h.w.KeyboardEvent('keydown',{key:'Enter'}));
  assert.equal(h.get('inspect-title').textContent,'Four Luminal agents');assert.equal(h.d.querySelectorAll('[data-insight-agent]').length,4);
  h.d.querySelector('[data-insight-agent="Explorer"]').click();assert.equal(h.get('inspect-title').textContent,'Explorer');
- h.w.eval('enableControl()');h.change('mode','demo');assert.equal(h.get('control-box').hidden,true);
- h.click('run-bot');h.click('new-run');h.click('stop-bot');
- assert.equal(h.requests.filter(r=>r.options?.method==='POST').length,0);
+
+});
+
+test('combined run history pages older records without losing new arrivals or mixing duplicate IDs',async t=>{
+ const h=harness(t);await h.start();
+ const recent={experiment_id:'b',_id:'same',job_id:'same',points:22,fitness:100,completed_at:'2026-10-11T12:00:00Z'};
+ h.respond('/api/snapshot',{...data('all'),counts:{runs:3},records:{runs:[recent]}});await settle();
+ assert.match(h.get('run-history').textContent,/b/);h.click('history-more');
+ const old={experiment_id:'a',_id:'same',job_id:'same',points:11,fitness:50,completed_at:'2026-10-10T12:00:00Z'};
+ h.respond('/api/history',{runs:[old],total:3});await settle();
+ const newer={...recent,_id:'new',job_id:'new',completed_at:'2026-10-12T12:00:00Z'};
+ h.w.eval('render('+JSON.stringify({...data('all'),counts:{runs:3},records:{runs:[newer,recent]}})+')');
+ assert.equal(h.get('run-history').querySelectorAll('button').length,3);assert.equal(h.get('history-more').hidden,true);
+ h.get('run-history').querySelectorAll('button')[2].click();assert.equal(h.get('saved-points').textContent,'11');
+ assert.match(h.get('saved-run-meta').textContent,/a/);
 });

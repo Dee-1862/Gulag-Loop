@@ -1,4 +1,4 @@
-# Self-Improving Zombies Agents
+# Gulag Loop
 
 **A team of Luminal agents evolves a bot that plays Call of Duty: Black Ops Zombies. The bot's eyes run on the laptop GPU, every strategy and run lives in MongoDB, and improvement is checked on runs the agents never trained on.**
 
@@ -182,6 +182,6 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 Run `.venv/bin/python -m dashboard.server` and open http://127.0.0.1:8765 to watch
 vision/game telemetry, MongoDB activity, and all four Luminal agents. Install the
 lightweight dependencies with `.venv/bin/python -m pip install -r requirements-dashboard.txt`.
-Use `--demo` for a clearly labeled preview without a game or database connection.
+The dashboard shows the live backend only. All experiments appear together, with one chronological run history and older results available through Load older runs.
 See [dashboard setup and controls](MD%20files/DASHBOARD.md), including the difference
 between pausing dashboard refresh and stopping the game worker.

@@ -1,4 +1,4 @@
-"""Local dashboard: python -m dashboard.server [--demo] [--port 8765] [--read-only].
+"""Local dashboard: python -m dashboard.server [--port 8765] [--read-only].
 
 Reads MongoDB. Locally it can also start/stop ONE game worker (dashboard/control.py); --read-only or
 DASHBOARD_READ_ONLY=1 removes that (use it for any hosted copy)."""
@@ -10,7 +10,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from threading import Lock
 import time
-from dashboard.demo import DemoSource
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,7 +19,7 @@ def configuration():
     try:
         from dotenv import dotenv_values
     except ImportError:
-        pass  # Keep the dependency-free demo available before setup.
+        pass  # Fall back to the simple environment-file parser.
     else:
         return {**dotenv_values(path), **os.environ}
     if path.exists():
@@ -31,11 +30,9 @@ def configuration():
     return {**values,**os.environ}
 
 class Backend:
-    def __init__(self, demo=False):
-        self.default_demo=demo
-        self.demo=DemoSource()
+    def __init__(self):
         self.live=None
-        self.error='MongoDB is not configured. Set MONGODB_URI in .env or open the demo preview.'
+        self.error='MongoDB is not configured. Set MONGODB_URI in .env.'
         self.cache={}
         self.lock=Lock()
         config=configuration()
@@ -47,16 +44,9 @@ class Backend:
                 self.error='Install requirements-dashboard.txt to connect to MongoDB.'
             except Exception:
                 self.error='MongoDB configuration could not be loaded. Check MONGODB_URI in .env.'
-    def source(self, demo):
-        return self.demo if demo else self.live
-    def snapshot(self, experiment, demo):
-        if demo:
-            return self.demo.snapshot(experiment)
+    def snapshot(self, experiment):
         if self.live is None:
             return dict(mode='live',connected=False,error=self.error)
-        if not experiment:
-            self.live.db.command('ping')
-            return dict(mode='live',connected=True,error='Select an experiment to inspect its pipeline.')
         with self.lock:
             cached=self.cache.get(experiment)
             if cached and time.monotonic()-cached[0]<2:
@@ -102,32 +92,37 @@ def handler_for(backend, control=None):
         def do_GET(self):
             url=urlparse(self.path)
             args=parse_qs(url.query)
-            demo=args.get('mode',['demo' if backend.default_demo else 'live'])[0]=='demo'
             experiment=args.get('experiment',[''])[0]
             static={'/':('dashboard/index.html','text/html'), '/app.js':('dashboard/app.js','text/javascript'),
-                    '/style.css':('dashboard/style.css','text/css'), '/demo-frame.jpg':('docs/img/hud_danger_close.jpg','image/jpeg')}
+                    '/style.css':('dashboard/style.css','text/css')}
             if url.path in static:
                 path,mime=static[url.path]
                 self.send((ROOT/path).read_bytes(),mime)
                 return
+            if args.get('mode', ['live'])[0] != 'live':
+                self.send(dict(error='Only the live backend is available.'), status=400)
+                return
             try:
                 if url.path=='/api/config':
-                    self.send(dict(default_mode='demo' if backend.default_demo else 'live', control=control is not None))
+                    self.send(dict(default_mode='live', control=control is not None))
                 elif url.path=='/api/control/status':
                     self.send(control.status() if control else dict(enabled=False))
                 elif url.path=='/api/experiments':
-                    source=backend.source(demo)
+                    source=backend.live
                     self.send(dict(experiments=source.experiments() if source else []))
+                elif url.path=='/api/history':
+                    offset=max(0, int(args.get('offset', ['0'])[0]))
+                    self.send(backend.live.history(offset) if backend.live else dict(runs=[],total=0))
                 elif url.path=='/api/snapshot':
-                    self.send(backend.snapshot(experiment,demo))
+                    self.send(backend.snapshot(experiment))
                 elif url.path=='/api/video':
-                    video=backend.live.video(experiment, args.get('job',[''])[0]) if backend.live and not demo else None
+                    video=backend.live.video(experiment, args.get('job',[''])[0]) if backend.live else None
                     if not video:
                         self.send(b'', 'video/mp4', 404)
                         return
                     self.send_video(video)
                 elif url.path=='/api/frame':
-                    frame=backend.live.frame(experiment, args.get('worker',[''])[0], args.get('job',[''])[0]) if backend.live and not demo else None
+                    frame=backend.live.frame(experiment, args.get('worker',[''])[0], args.get('job',[''])[0]) if backend.live else None
                     self.send(frame or b'', 'image/jpeg', 200 if frame else 204)
                 else:
                     self.send(dict(error='Not found'),status=404)
@@ -159,16 +154,15 @@ def handler_for(backend, control=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--demo',action='store_true')
     parser.add_argument('--port',type=int,default=8765)
     parser.add_argument('--read-only',action='store_true',help='no Start/Stop game buttons (use for hosted copies)')
     args=parser.parse_args()
     control=None
-    if not (args.demo or args.read_only or os.environ.get('DASHBOARD_READ_ONLY')):
+    if not (args.read_only or os.environ.get('DASHBOARD_READ_ONLY')):
         from dashboard.control import WorkerControl
         control=WorkerControl()
-    server=ThreadingHTTPServer(('127.0.0.1',args.port),handler_for(Backend(args.demo),control))
-    print(f'Dashboard: http://127.0.0.1:{args.port} ({"demo" if args.demo else "live"} mode)',flush=True)
+    server=ThreadingHTTPServer(('127.0.0.1',args.port),handler_for(Backend(),control))
+    print(f'Dashboard: http://127.0.0.1:{args.port} (live mode)',flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
