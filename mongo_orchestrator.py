@@ -104,7 +104,7 @@ class MongoOrchestrator:
                 "kind": job["kind"], "params": params}
 
     def release_job(self, job_id, worker):
-        """Put a job this worker claimed back in the queue (F8 abort)."""
+        """Put a job this worker claimed back in the queue after an abort or invalid episode."""
         return self.db[JOBS].update_one(
             {"_id": job_id, "experiment_id": self.experiment_id, "status": "running", "worker": worker},
             {"$set": {"status": "queued"}, "$unset": {"worker": "", "claimed_at": ""}}).modified_count == 1

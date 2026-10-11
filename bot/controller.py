@@ -20,6 +20,11 @@ from bot.scoring import classify_delta, in_head_zone, summarize as summarize_sho
 from bot import livestream
 from bot.tactics import Tactics
 
+
+class InvalidEpisode(RuntimeError):
+    """The game could not be played reliably; retry without recording a score."""
+
+
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
                 burst_ms=120, retreat_box_h=300, strafe_mode="none", strafe_period_s=2.0,
                 reload_when_clear_at=3, scan_turn_px=60, target_rule="center")
@@ -195,10 +200,12 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                              "visible": now - v["last"] < 0.2, "target": False} for v in memory.items.values()],
                 "entries": [wrap180(b - heading.yaw) for b, _ in entries.points]}
 
-    t0 = time.time()
     t_hud = t_frame_save = t_pub = 0.0
     frame = None
     try:
+        if hasattr(game, "ensure_locked") and not game.ensure_locked():
+            raise InvalidEpisode("could not take the mouse before the episode")
+        t0 = time.time()
         while True:
             now = time.time()
             el = now - t0
@@ -207,7 +214,11 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             if n % 30 == 0 and not game.locked():  # paused / lost focus: release keys, re-acquire
                 keys.release_all()
                 lock_losses += 1
+                if getattr(game, "page", None) is not None and game.page.is_closed():
+                    raise InvalidEpisode("browser closed mid-episode")
                 if not game.ensure_locked():
+                    if el < 5.0:
+                        raise InvalidEpisode(f"mouse lost at {el:.1f}s before play really started")
                     # the death screen releases the mouse; a lost lock that can't be re-acquired = dead
                     game_over = True
                     log(f"[ctl] pointer lock gone at {el:.1f}s (death screen); ending episode")
