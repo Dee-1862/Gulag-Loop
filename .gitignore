@@ -1,1 +1,6 @@
 .gyst/
+.agents/
+.claude/
+.env
+results/selftest/
+__pycache__/
