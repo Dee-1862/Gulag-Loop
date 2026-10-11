@@ -102,7 +102,7 @@ class Keys:
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
                 save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0,
-                map_name="kino", db=None, experiment_id=None, job_id=None):
+                map_name="kino", db=None, experiment_id=None, job_id=None, on_progress=None):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -163,6 +163,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
     t0 = time.time()
     t_hud = t_frame_save = 0.0
+    t_progress = 0.0
     frame = None
     try:
         while True:
@@ -342,6 +343,14 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             prev_small = small
 
             last5.append((now, obs.telemetry["n_tracks"], obs.nearest_h_frac, action, ammo[0] if ammo else None))
+            if on_progress and now - t_progress >= 2.0:
+                try:
+                    on_progress(frame=vp.hud_frame(info={'action': action, 'points': points or 0}),
+                                fps=round(n / max(el, 0.001), 1), detections=len(confirmed), action=action,
+                                points=int(max(0, (points or 0) - (points0 or 0))), elapsed_s=round(el, 1))
+                except Exception:
+                    pass  # Observability is best effort; the controller keeps running.
+                t_progress = now
             while last5 and now - last5[0][0] > 5:
                 last5.popleft()
 

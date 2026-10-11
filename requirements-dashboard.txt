@@ -1,0 +1,3 @@
+# The dashboard does not require the Windows game or vision dependencies.
+pymongo>=4.10,<5
+python-dotenv>=1.0

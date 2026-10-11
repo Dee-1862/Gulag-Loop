@@ -149,7 +149,15 @@ class MongoOrchestrator:
         state = self.load_state()
         known = {s["_id"] for s in state["strategies"]}
         known_jobs = {j["job_id"] for j in state["jobs"]}
-        updated = advance(state, client)  # model calls happen here, outside the transaction
+        from common.monitoring import Reporter
+        reporter = Reporter(self.db, self.experiment_id, 'luminal', 'agents')
+        previous_callback = getattr(client, 'on_progress', None)
+        client.on_progress = reporter.emit
+        try:
+            updated = advance(state, client)  # model calls happen here, outside the transaction
+        finally:
+            client.on_progress = previous_callback
+            reporter.close()
         children = [c for c in updated["strategies"] if c["_id"] not in known]
         new_jobs = [j for j in updated["jobs"] if j["job_id"] not in known_jobs]
         history = updated["history"][-1]

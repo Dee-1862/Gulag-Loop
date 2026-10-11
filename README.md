@@ -163,3 +163,12 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 - No gameplay improvement has been measured yet; all test runs are synthetic.
 - Cluster runs MongoDB 8.0 (Atlas free tier); we make no MongoDB 9.0 performance claims.
 - The game is an unofficial fan port; we link to it and include none of its files.
+
+## Backend dashboard
+
+Run `.venv/bin/python -m dashboard.server` and open http://127.0.0.1:8765 to watch
+vision/game telemetry, MongoDB activity, and all four Luminal agents. Install the
+lightweight dependencies with `.venv/bin/python -m pip install -r requirements-dashboard.txt`.
+Use `--demo` for a clearly labeled preview without a game or database connection.
+See [dashboard setup and controls](MD%20files/DASHBOARD.md), including the difference
+between pausing dashboard refresh and stopping the game worker.
