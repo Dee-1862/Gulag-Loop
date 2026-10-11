@@ -1,0 +1,17 @@
+# Read-only dashboard on Render. The game and vision model stay on a GPU laptop; this page reads MongoDB Atlas.
+services:
+  - type: web
+    name: zombieloop-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-dashboard.txt
+    startCommand: python -m dashboard.server --read-only
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: DASHBOARD_READ_ONLY
+        value: "1"
+      - key: MONGODB_DB
+        value: zombieloop
+      - key: MONGODB_URI   # set in the Render dashboard: a READ-ONLY Atlas user
+        sync: false
