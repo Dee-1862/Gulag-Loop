@@ -23,6 +23,8 @@ class GenerationTests(unittest.TestCase):
                 params['strafe_mode'] = 'alternate'
             else:
                 params['aim_gain'] = 0.72
+                if persona == 'Bold':
+                    params['aim_max_step'] = 60
             content = json.dumps(dict(strategy=params, rationale='Sample proposal.'))
             return SimpleNamespace(model='test-model', usage=None,
                 choices=[SimpleNamespace(message=SimpleNamespace(content=content))])

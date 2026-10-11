@@ -10,6 +10,8 @@ BOUNDS = {
     'retreat_box_h': (50, 500), 'strafe_period_s': (0.5, 5.0),
     'reload_when_clear_at': (0, 8), 'scan_turn_px': (0, 300),
 }
+INTEGER_PARAMS = {'aim_max_step', 'fire_radius_px', 'burst_ms', 'retreat_box_h',
+                  'reload_when_clear_at', 'scan_turn_px'}
 
 class Strategy(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
@@ -31,6 +33,8 @@ class Strategy(BaseModel):
     def clamp_numeric(cls, value, info):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError('Expected a JSON number')
+        if info.field_name in INTEGER_PARAMS and not isinstance(value, int):
+            raise ValueError('Expected a JSON integer')
         if not math.isfinite(value):
             raise ValueError('Number must be finite')
         lo, hi = BOUNDS[info.field_name]
@@ -40,6 +44,13 @@ class Proposal(BaseModel):
     model_config = ConfigDict(extra='forbid')
     strategy: Strategy
     rationale: str = Field(min_length=1, max_length=1000)
+
+    @field_validator('rationale')
+    @classmethod
+    def nonblank_rationale(cls, value):
+        if not value.strip():
+            raise ValueError('Rationale must not be blank')
+        return value.strip()
 
 BASELINE = Strategy(
     det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15,

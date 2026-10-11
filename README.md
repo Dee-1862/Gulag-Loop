@@ -63,8 +63,9 @@ are enforced after validation. Two proposal attempts are allowed; failed proposa
 produce an explicitly marked local mutation fallback. The SDK separately retries
 transient request errors twice. Logs exclude credentials and raw error bodies.
 
-This module does not run games, rank champions, or write to MongoDB. Those belong
-to the orchestrator. Sample diagnostics are synthetic, not evidence of improvement.
+The Luminal client does not run games or write to MongoDB. The optional local
+orchestrator described below handles ranking and file-based queueing. Sample
+diagnostics are synthetic, not evidence of improvement.
 
 ## JSON handoff runner (one or two ranked parents)
 
@@ -93,3 +94,83 @@ Output has the same `strategies` and `llm_calls` batch structure as `generate_ba
 Calls are linked to children by `strategy_id`; UTC timestamps and per-attempt prompt
 hashes support audit logging. The CLI refuses to overwrite existing output files.
 The `outputs/` directory is ignored by Git so run artifacts stay local by default.
+
+## Complete local evolution loop
+
+The standalone local orchestrator implements §3/§5.5's selection loop without MongoDB
+or vision code. It queues two baseline runs, ranks evaluated strategies by mean
+`points + 5 × survival_s`, retains the top two, generates four children, and queues
+one champion re-evaluation every generation. Every historical evaluation contributes
+to the mean. It waits for all issued jobs before advancing and retains full lineage,
+run diagnostics, strategy rationales, and API call logs in a JSON state file.
+
+```sh
+.venv/bin/python evolve_local.py --state outputs/evolution.json init
+.venv/bin/python evolve_local.py --state outputs/evolution.json jobs
+# A game worker or teammate supplies results.json matching those job IDs.
+.venv/bin/python evolve_local.py --state outputs/evolution.json ingest --results results.json
+.venv/bin/python evolve_local.py --state outputs/evolution.json propose --dry-run
+.venv/bin/python evolve_local.py --state outputs/evolution.json propose
+.venv/bin/python evolve_local.py --state outputs/evolution.json status
+```
+
+`propose` without `--dry-run` calls Luminal. Repeat `jobs → ingest → propose` as
+results arrive. The state is saved after every transition and can be resumed.
+Use one process at a time per state file. An issued job has a unique `job_id`,
+`strategy_id`, `kind`, and controller-ready `params`. Imported results are a JSON
+array of objects in this shape (replace IDs with the actual issued IDs):
+
+```json
+[{
+  "job_id": "issued-job-id",
+  "strategy_id": "baseline",
+  "worker": "laptop-1",
+  "map": "kino",
+  "points": 200,
+  "survival_s": 112.0,
+  "diagnostics": {"overshoot_rate": 0.58, "time_no_target_pct": 37}
+}]
+```
+
+`points` means points gained, and survival is bounded to the plan's 180-second
+horizon. Fitness is calculated locally rather than trusting an arbitrary supplied
+fitness. Duplicate identical imports are harmless; conflicting imports, unknown
+jobs, strategy mismatches, and invalid results are rejected before saving anything.
+To avoid comparing incompatible hardware or maps, a local state uses one worker
+and map. Multi-worker normalization belongs in the production orchestrator adapter.
+Numeric diagnostics present in every run are averaged; other shared fields use the
+latest value. Missing diagnostics are omitted instead of fabricated.
+
+Exercise the full loop without credentials or teammates:
+
+```sh
+.venv/bin/python offline_demo.py
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The offline demo uses fabricated constant scores and local mutations. It proves
+control flow only, not Luminal usage or gameplay improvement.
+
+## Reliability and configuration
+
+Configure concurrency (1–4), request timeout, SDK transient retries, output token
+budget, and optional JSON mode using `.env.example`. Prompt-only JSON is the
+default; JSON mode is opt-in because endpoint support may vary. Each agent has
+at most two proposal attempts, in addition to SDK retries with backoff.
+
+All personas must change something. Bold changes 2–4 parameters; Tuner changes
+1–2 numeric values by at most 15%; Defender changes only survival parameters;
+Explorer changes only targeting or strafe mode. Prompts explain diagnostic units
+and measurement limitations. Logs include clamped parameter names and children
+include changed parameter names.
+
+A failed agent first tries its last successful cached proposal, revalidating it
+against the current parent and persona. Otherwise it makes a bounded local mutation.
+Both paths are marked `fallback=true` and carry a `fallback_source`; neither is
+reported as a fresh successful LLM call. Cache is in memory per client; the local
+orchestrator restores it from successful strategies in its state when resumed.
+
+Your MongoDB teammate can replace local storage while retaining the input/output
+contracts. Your controller teammate executes jobs and supplies telemetry. Manual
+restart, screen capture, detection, scoring/OCR collection, and worker-specific
+normalization are not implemented in this Luminal module.

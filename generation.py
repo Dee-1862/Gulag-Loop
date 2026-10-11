@@ -40,7 +40,7 @@ def generate_generation(client, request):
     request = request if isinstance(request, GenerationInput) else GenerationInput.model_validate(request)
     references = [p.model_dump() for p in request.parents]
     started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=getattr(client, 'concurrency', 4)) as pool:
         futures = [pool.submit(
             client.generate, parent=parent.params.model_copy(deep=True),
             diagnostics=deepcopy(parent.diagnostics), persona=persona,
