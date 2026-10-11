@@ -89,6 +89,23 @@ this does turn the camera in a **focused** window. But:
 Real parallelism means **one worker per laptop** (`bot.worker` / `bot.loop` on each machine). The parallel code stays
 for reference.
 
+### Team dashboard (MongoDB)
+`bot/publish.py` writes exactly the documents the dashboard on `origin/jeffrey` (`dashboard/data.py`) reads, all scoped
+by `experiment_id` (default `rishit-<state file>`):
+- `experiments` (`design: 'bot'`), plus `playbooks`, `jobs`, `runs` and `llm_calls` mirrored from the evolution state
+- `dashboard_status`: the live **Worker viewport**. It's an annotated 640×360 HUD frame with fps, detections, action, points and elapsed time, refreshed every 2 s during a game.
+- **footage**: each episode's HUD video, re-encoded to 640 px faststart MP4, goes into the GridFS bucket `footage`,
+  with a `footage` doc per `job_id` (strategy, points, kills, fitness). The dashboard doesn't render videos yet;
+  the data is ready for a player panel.
+
+```bash
+python -m bot.loop ... --publish                      # live: viewport heartbeat + sync after every game
+python -m bot.publish --state D:/czb/evo_state/kino_v6.json   # backfill an experiment and its videos
+```
+Credentials come from `CZB_HOME/.env` (`MONGODB_URI`, `MONGODB_DB`), never from the repo. Tested against a local
+`mongod` with the unmodified dashboard: experiments, records, leaderboard, chart, worker card and `/api/frame`
+viewport all render.
+
 ### Feedback quality (what the agents see)
 - **Exact scoring:** after GAME OVER, the post-game table (Points / Kills / Headshots) is read by OCR, and its points
   replace the live-HUD estimate. `kills` and `headshots` are added to the diagnostics.

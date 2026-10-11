@@ -73,7 +73,7 @@ class Runner:
 
     def __init__(self, map_id="kino", config="config.yaml", out_dir=_p("episodes"),
                  save_frames=_p("port_frames"), frame_every=1.0, max_s=180.0, worker=None,
-                 slot=None, input_mode="os", ocr_gpu=True, latency_s=0.11):
+                 slot=None, input_mode="os", ocr_gpu=True, latency_s=0.11, publisher=None):
         from vision.capture import Capture
         from vision.pipeline import VisionPipeline
         from bot.hudread import HudReader
@@ -81,6 +81,7 @@ class Runner:
         self.save_frames, self.frame_every = save_frames, frame_every
         self.worker = worker or socket.gethostname()
         self.slot, self.latency_s = slot, latency_s
+        self.publisher = publisher
         self.cpp = load_calib().get("counts_per_px")
         if self.cpp is None:
             self.cpp = 0.15
@@ -130,7 +131,10 @@ class Runner:
         res = run_episode(self.game, self.vp, self.hud, job["params"], max_s=self.max_s, counts_per_px=self.cpp,
                           record_path=os.path.join(self.out_dir, f"{job['job_id']}.mp4") if self.out_dir else None,
                           save_frames_dir=os.path.join(self.save_frames, self.map_id) if self.save_frames else None,
-                          log=log, cap=self.cap, frame_every_s=self.frame_every, latency_s=self.latency_s)
+                          log=log, cap=self.cap, frame_every_s=self.frame_every, latency_s=self.latency_s,
+                          publisher=self.publisher, job_id=job["job_id"])
+        if self.publisher is not None:
+            self.publisher.idle()
         log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
             f"diag={json.dumps(res['diagnostics'])[:300]}")
         if res["aborted"]:

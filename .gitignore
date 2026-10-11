@@ -10,3 +10,4 @@ runs/
 *.mp4
 *.whl
 calibration.json
+.env

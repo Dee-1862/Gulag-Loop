@@ -115,7 +115,8 @@ class Keys:
 
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
-                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0, latency_s=0.11):
+                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0, latency_s=0.11,
+                publisher=None, job_id=None):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -172,7 +173,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
 
     t0 = time.time()
-    t_hud = t_frame_save = 0.0
+    t_hud = t_frame_save = t_pub = 0.0
     frame = None
     try:
         while True:
@@ -362,6 +363,12 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             while last5 and now - last5[0][0] > 5:
                 last5.popleft()
 
+            if publisher is not None and now - t_pub > 2.0:  # live "Worker viewport" on the team dashboard
+                t_pub = now
+                publisher.heartbeat(job_id, vp.hud_frame(info={"action": action}), fps=round(vp.fps, 1),
+                                    detections=obs.telemetry["n_tracks"], action=action,
+                                    points=(points - points0) if (points is not None and points0 is not None) else 0,
+                                    elapsed_s=round(el, 1), force=True)
             if rec and n % 2 == 0:
                 rec.write(vp.hud_frame(info={"action": action, "points": points if points is not None else "-",
                                              "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "

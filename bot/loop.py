@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--seed-profiles", action="store_true", help="gen 0 = baseline + Aggressive/Conservative/Sniper/Kiter")
     ap.add_argument("--evals-per-child", type=int, default=2, help="evaluations queued per new child (noise control)")
+    ap.add_argument("--publish", action="store_true", help="mirror to the team MongoDB dashboard (CZB_HOME/.env)")
+    ap.add_argument("--experiment-id", default=None, help="dashboard experiment id (default: rishit-<state file name>)")
     args = ap.parse_args()
 
     evo = load_evo(args.evo_dir)
@@ -63,7 +65,14 @@ def main():
         evo.save_state(args.state, state, create=True)
         log(f"new experiment {args.state}: {len(state['jobs'])} jobs queued")
 
-    runner = Runner(args.map, args.config, max_s=args.max_s)
+    pub = None
+    if args.publish:
+        from bot.publish import Publisher
+        exp_id = args.experiment_id or "rishit-" + os.path.splitext(os.path.basename(args.state))[0]
+        pub = Publisher(exp_id, args.map)
+        pub.sync_state(state)
+        log(f"publishing to dashboard experiment '{exp_id}'")
+    runner = Runner(args.map, args.config, max_s=args.max_s, publisher=pub)
     try:
         while True:
             jobs = evo.pending_jobs(state)
@@ -77,6 +86,16 @@ def main():
                     break
                 state = evo.ingest_results(state, [r])
                 evo.save_state(args.state, state)
+                if pub is not None:
+                    try:
+                        pub.sync_state(state)
+                        d = r["diagnostics"]
+                        pub.upload_footage(r["job_id"], os.path.join(runner.out_dir or "", f"{r['job_id']}.mp4"),
+                                           meta={"strategy_id": r["strategy_id"], "generation": job.get("generation"),
+                                                 "points": r["points"], "survival_s": r["survival_s"],
+                                                 "kills": d.get("kills"), "fitness": r["points"] + 5 * r["survival_s"]})
+                    except Exception as e:
+                        log(f"dashboard publish failed (continuing): {type(e).__name__}: {str(e)[:120]}")
                 continue
             parents = evo.ranked_parents(state)
             log(f"generation {state['generation']} complete. top parents: " +
@@ -92,6 +111,11 @@ def main():
                     if child.get("persona") in ("Bold", "Tuner", "Defender", "Explorer") and not child.get("fallback"):
                         client.cache[child["persona"]] = Proposal(strategy=child["params"], rationale=child["rationale"])
             state = evo.advance(state, client)
+            if pub is not None:
+                try:
+                    pub.sync_state(state)
+                except Exception as e:
+                    log(f"dashboard publish failed (continuing): {type(e).__name__}")
             for c in state["strategies"]:  # extra evaluations per child: one run is mostly noise
                 if c.get("generation") == state["generation"] and c.get("persona") != "Baseline":
                     state["jobs"] += [evo.make_job(c["_id"], state["generation"], "child")
