@@ -19,3 +19,4 @@ runs/
 *.whl
 calibration.json
 local_data/
+zombie_bot/runtime/

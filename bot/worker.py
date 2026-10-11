@@ -98,7 +98,11 @@ class Runner:
         self.map_id, self.out_dir, self.max_s = map_id, out_dir, max_s
         self.save_frames, self.frame_every = save_frames, frame_every
         self.worker = worker or socket.gethostname()
-        self.cpp = load_calib().get("counts_per_px")
+        from bot.shared import team_calibration
+        shared = team_calibration(worker or socket.gethostname())  # MongoDB machines/<this laptop>, else the team default
+        self.cpp = shared["counts_per_px"] if shared else load_calib().get("counts_per_px")
+        if shared:
+            log(f"calibration from {shared['source']}: counts_per_px={self.cpp}")
         if self.cpp is None:
             self.cpp = 0.15
             log("WARNING: no calibration.json; using counts_per_px=0.15. Run `python -m bot.worker calibrate`.")
@@ -150,6 +154,9 @@ def main():
     ap.add_argument("--map", default="kino")
     ap.add_argument("--jobs", default=None)
     ap.add_argument("--baseline", type=int, default=0, help="run the baseline strategy N times (no jobs file)")
+    ap.add_argument("--play", default=None,
+                    help="play a named team strategy from MongoDB (e.g. champion, best, aggressive)")
+    ap.add_argument("--games", type=int, default=1, help="games to play with --play")
     ap.add_argument("--results", default="results.json")
     ap.add_argument("--max-s", type=float, default=180)
     ap.add_argument("--out-dir", default=None, help="HUD recordings per episode (default: <data>/episodes)")
@@ -176,6 +183,9 @@ def main():
             json.dump({**load_calib(), "counts_per_px": round(cpp, 4), "machine": args.worker,
                        "calibrated_at": time.strftime("%Y-%m-%d %H:%M")}, open(CALIB, "w"), indent=2)
             log(f"counts_per_px = {cpp:.4f} saved to {CALIB}")
+            from bot.shared import save_team_calibration
+            if save_team_calibration(cpp, args.worker, gpu=game.gpu(), source="bot.worker calibrate"):
+                log(f"  and to MongoDB machines/{args.worker} (shared with the team)")
         finally:
             game.close()
         return
@@ -185,6 +195,14 @@ def main():
         return
     if args.jobs:
         jobs = json.load(open(args.jobs))
+    elif args.play:
+        from bot.shared import team_strategy
+        entry = team_strategy(args.play, args.map)
+        if entry is None:
+            raise SystemExit(f"strategy '{args.play}' not found in MongoDB (or MongoDB unreachable)")
+        log(f"playing '{args.play}' x{args.games} from {entry['source']}: {json.dumps(entry['params'])}")
+        jobs = [{"job_id": f"{args.play}-{i}-{int(time.time())}", "strategy_id": args.play, "kind": "play",
+                 "params": entry["params"]} for i in range(args.games)]
     else:
         jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
                  "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]
