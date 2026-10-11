@@ -137,7 +137,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
     last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
     sweep_t0, sweep_dir = time.time(), 1
-    pitch_cap = 160.0 * counts_per_px  # mouse counts for ~160 screen px of pitch either way
+    pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
 
     t0 = time.time()
     t_hud = t_frame_save = 0.0
@@ -185,6 +185,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             n += 1
             det_sum += obs.telemetry["n_boxes"]
             tgt = obs.target
+            if tgt is not None and (tgt.hits < 3 or tgt.missed > 2):
+                tgt = None  # unconfirmed or long-gone: real zombies persist across frames, false positives flicker
             action = "SCAN"
             keys.tick(now)
 
@@ -216,7 +218,11 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target
-                    if keys.fire(S["burst_ms"], now):
+                    if ammo and ammo[0] == 0 and ammo[1] > 0:
+                        if now - last_reload > 3:
+                            keys.press("r")
+                            last_reload = now
+                    elif keys.fire(S["burst_ms"], now):
                         fires += 1
                     action = "FIRE"
                 else:
@@ -248,8 +254,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         sweep_dir, sweep_t0 = -sweep_dir, now
                     turn = sweep_dir * S["scan_turn_px"]
                 pitch += keys.move(turn * dt * counts_per_px, level)
-                if (S["reload_when_clear_at"] and ammo and ammo[0] < S["reload_when_clear_at"]
-                        and ammo[1] > 0 and now - last_reload > 3):
+                if (ammo and ammo[1] > 0 and now - last_reload > 3 and
+                        (ammo[0] == 0 or (S["reload_when_clear_at"] and ammo[0] <= S["reload_when_clear_at"]))):
                     keys.press("r")
                     last_reload = now
                     action = "RELOAD"
@@ -304,6 +310,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "shots_without_target": 0,  # the controller only fires with a locked target
         "shots_fired": fires,
         "hits_proxy": hits_proxy,
+        "hit_rate": round(hits_proxy / fires, 3) if fires else None,  # point-gain events per shot fired
         "close_calls": close_calls,
         "retreat_frames": retreat_frames,
         "time_no_target_pct": round(100.0 * no_target / n, 1) if n else 100.0,
