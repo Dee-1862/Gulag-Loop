@@ -11,6 +11,10 @@ services:
         value: 0.0.0.0
       - key: DASHBOARD_READ_ONLY
         value: "1"
+      - key: DASHBOARD_EXPERIMENT
+        value: rishit-kino_v6
+      - key: SHOWCASE_EXPERIMENT
+        value: rishit-kino_v6
       - key: MONGODB_DB
         value: zombieloop
       - key: MONGODB_URI   # set in the Render dashboard: a READ-ONLY Atlas user
