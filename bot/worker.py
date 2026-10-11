@@ -93,6 +93,17 @@ def main():
     from vision.pipeline import VisionPipeline
     from bot.hudread import HudReader
 
+    vp = hud = None
+    if args.command == "run":
+        # Load the detector and OCR BEFORE starting the game: they take ~1 min, and an idle player
+        # in round 1 gets killed before the first episode begins.
+        import yaml
+        weights = resolve_weights(args.weights or yaml.safe_load(open(args.config))["vision"]["weights"])
+        log(f"detector weights: {weights}")
+        vp = VisionPipeline.from_config(args.config, live=False, weights=weights)
+        hud = HudReader()
+        log("detector and HUD reader loaded")
+
     game = PortGame(args.map, log=log).open()
     log("gpu:", game.gpu())
     try:
@@ -130,11 +141,6 @@ def main():
         from vision.capture import Capture
         cap = Capture(game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
         log(f"capture backend: {cap.backend} region {game.canvas_region()}")
-        import yaml
-        weights = resolve_weights(args.weights or yaml.safe_load(open(args.config))["vision"]["weights"])
-        log(f"detector weights: {weights}")
-        vp = VisionPipeline.from_config(args.config, live=False, weights=weights)
-        hud = HudReader()
         os.makedirs(args.out_dir, exist_ok=True)
         log(f"{'MongoDB experiment ' + args.experiment if orch else str(len(jobs)) + ' jobs'}, counts_per_px={cpp}")
 
