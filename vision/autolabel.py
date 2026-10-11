@@ -56,7 +56,9 @@ def dedupe_labels(root):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--videos", nargs="+", required=True)
+    ap.add_argument("--videos", nargs="+", default=[])
+    ap.add_argument("--images", nargs="+", default=[], help="globs of raw frames (e.g. port episodes)")
+    ap.add_argument("--val-tail", type=float, default=0.2, help="--images: last fraction (by time) goes to val")
     ap.add_argument("--out", default="D:/czb/datasets/zombies")
     ap.add_argument("--every", type=float, default=0.2, help="seconds between sampled frames")
     ap.add_argument("--conf", type=float, default=0.3)
@@ -77,9 +79,32 @@ def main():
         os.makedirs(f"{args.out}/images/{split}", exist_ok=True)
         os.makedirs(f"{args.out}/labels/{split}", exist_ok=True)
 
+    def label_frame(frame, name, split):
+        nonlocal total, pos, boxes_n
+        frame = cv2.resize(frame, (1280, 720))
+        masked = masker.apply_masks(frame)
+        H, W = masked.shape[:2]
+        r = teacher.predict(masked, conf=args.conf, imgsz=960, device="cuda:0", agnostic_nms=True, verbose=False)[0]
+        lines = [f"0 {(x1 + x2) / 2 / W:.6f} {(y1 + y2) / 2 / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}"
+                 for x1, y1, x2, y2 in dedupe(r.boxes.xyxy.tolist()) if keep(x1, y1, x2, y2, W, H)]
+        if lines or random.random() < args.neg_keep:
+            cv2.imwrite(f"{args.out}/images/{split}/{name}.jpg", masked, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            with open(f"{args.out}/labels/{split}/{name}.txt", "w") as f:
+                f.write(chr(10).join(lines))
+            total += 1
+            pos += bool(lines)
+            boxes_n += len(lines)
+
+    images = sorted({p for pat in args.images for p in glob.glob(pat)})
+    total = pos = boxes_n = 0
+    for k, path in enumerate(images):
+        split = "val" if k >= len(images) * (1 - args.val_tail) else "train"
+        label_frame(cv2.imread(path), "port_" + os.path.splitext(os.path.basename(path))[0], split)
+    if images:
+        print(f"[autolabel] {len(images)} images -> {total} kept, {pos} with zombies, {boxes_n} boxes")
+
     videos = sorted({p for pat in args.videos for p in glob.glob(pat)})
     random.seed(0)
-    total = pos = boxes_n = 0
     for vi, path in enumerate(videos):
         # whole videos go to val, so val frames aren't near-duplicates of train frames
         split = "val" if (vi == len(videos) - 1 and len(videos) > 1) else "train"

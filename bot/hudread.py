@@ -47,4 +47,4 @@ class HudReader:
 
     def game_over(self, frame):
         txt = " ".join(t for t, c in self._read(frame, GAME_OVER_BOX, None, scale=1.0)).upper()
-        return any(k in txt for k in ("GAME OVER", "SURVIVED", "HEADSHOTS", "KILLS"))
+        return "GAME OVER" in txt or "SURVIVED" in txt or ("KILLS" in txt and "HEADSHOTS" in txt)

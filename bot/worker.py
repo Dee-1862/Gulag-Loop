@@ -67,6 +67,65 @@ def load_calib():
     return json.load(open(CALIB)) if os.path.exists(CALIB) else {}
 
 
+class Runner:
+    """One open game session that evaluates jobs back to back (used by worker `run` and bot.loop)."""
+
+    def __init__(self, map_id="kino", config="config.yaml", out_dir="D:/czb/episodes",
+                 save_frames="D:/czb/port_frames", frame_every=1.0, max_s=180.0, worker=None):
+        from vision.capture import Capture
+        from vision.pipeline import VisionPipeline
+        from bot.hudread import HudReader
+        self.map_id, self.out_dir, self.max_s = map_id, out_dir, max_s
+        self.save_frames, self.frame_every = save_frames, frame_every
+        self.worker = worker or socket.gethostname()
+        self.cpp = load_calib().get("counts_per_px")
+        if self.cpp is None:
+            self.cpp = 0.15
+            log("WARNING: no calibration.json; using counts_per_px=0.15. Run `python -m bot.worker calibrate`.")
+        os.makedirs(out_dir, exist_ok=True)
+        self.game = PortGame(map_id, log=log).open()
+        log("gpu:", self.game.gpu())
+        self.game.start()
+        self.game.align()
+        self._Capture = Capture
+        self.cap = Capture(self.game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
+        log(f"capture backend: {self.cap.backend} region {self.game.canvas_region()}, counts_per_px={self.cpp}")
+        self.vp = VisionPipeline.from_config(config, live=False)
+        self.hud = HudReader()
+        self.fresh = True
+
+    def run(self, job):
+        """Play one episode for a job. Returns a result dict in the ingest format, or None if aborted (F8)."""
+        if not self.fresh:
+            self.game.start()  # reload = fresh game; assets come from cache
+            old = self.game.canvas_region()
+            if self.game.align() != old:  # window moved: rebuild the capture
+                self.cap.close()
+                self.cap = self._Capture(self.game.canvas_region(), 60)
+        self.fresh = False
+        self.vp.tracker.__init__()  # fresh track ids per episode
+        self.hud.points_hist.clear()
+        self.hud.points = None
+        res = run_episode(self.game, self.vp, self.hud, job["params"], max_s=self.max_s, counts_per_px=self.cpp,
+                          record_path=os.path.join(self.out_dir, f"{job['job_id']}.mp4"),
+                          save_frames_dir=os.path.join(self.save_frames, self.map_id) if self.save_frames else None,
+                          log=log, cap=self.cap, frame_every_s=self.frame_every)
+        log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
+            f"diag={json.dumps(res['diagnostics'])[:300]}")
+        if res["aborted"]:
+            log("aborted by F8; not recording this job")
+            return None
+        return {"job_id": job["job_id"], "strategy_id": job["strategy_id"], "worker": self.worker,
+                "map": self.map_id, "points": res["points"], "survival_s": res["survival_s"],
+                "diagnostics": res["diagnostics"]}
+
+    def close(self):
+        try:
+            self.cap.close()
+        finally:
+            self.game.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["calibrate", "run"])
@@ -82,71 +141,41 @@ def main():
     ap.add_argument("--frame-every", type=float, default=1.0, help="seconds between saved raw frames")
     args = ap.parse_args()
 
-    from vision.pipeline import VisionPipeline
-    from bot.hudread import HudReader
-
-    game = PortGame(args.map, log=log).open()
-    log("gpu:", game.gpu())
-    try:
-        game.start()
-        game.align()
-        if args.command == "calibrate":
+    if args.command == "calibrate":
+        game = PortGame(args.map, log=log).open()
+        try:
+            game.start()
+            game.align()
             cpp = calibrate(game)
             json.dump({**load_calib(), "counts_per_px": round(cpp, 4), "machine": args.worker,
                        "calibrated_at": time.strftime("%Y-%m-%d %H:%M")}, open(CALIB, "w"), indent=2)
             log(f"counts_per_px = {cpp:.4f} saved to {CALIB}")
-            return
+        finally:
+            game.close()
+        return
 
-        if args.jobs:
-            jobs = json.load(open(args.jobs))
-        else:
-            jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
-                     "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]
-        results = json.load(open(args.results)) if os.path.exists(args.results) else []
-        done = {r["job_id"] for r in results}
-        cpp = load_calib().get("counts_per_px")
-        if cpp is None:
-            cpp = 0.15
-            log("WARNING: no calibration.json; using counts_per_px=0.15. Run `python -m bot.worker calibrate`.")
-        from vision.capture import Capture
-        cap = Capture(game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
-        log(f"capture backend: {cap.backend} region {game.canvas_region()}")
-        vp = VisionPipeline.from_config(args.config, live=False)
-        hud = HudReader()
-        os.makedirs(args.out_dir, exist_ok=True)
-        log(f"{len(jobs)} jobs, counts_per_px={cpp}")
-
-        fresh = True  # the session opened above is a new game
+    if args.jobs:
+        jobs = json.load(open(args.jobs))
+    else:
+        jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
+                 "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]
+    os.makedirs(os.path.dirname(os.path.abspath(args.results)), exist_ok=True)
+    results = json.load(open(args.results)) if os.path.exists(args.results) else []
+    done = {r["job_id"] for r in results}
+    runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker)
+    try:
         for i, job in enumerate(jobs):
             if job["job_id"] in done:
                 continue
-            if not fresh:
-                game.start()  # reload = fresh game; assets come from cache
-                old = game.canvas_region()
-                if game.align() != old:  # window moved: rebuild the capture
-                    cap.close()
-                    cap = Capture(game.canvas_region(), 60)
-            fresh = False
-            vp.tracker.__init__()  # fresh track ids per episode
-            hud.points_hist.clear()
-            hud.points = None
             log(f"job {i + 1}/{len(jobs)} {job['kind']} {job['strategy_id'][:8]}")
-            res = run_episode(game, vp, hud, job["params"], max_s=args.max_s, counts_per_px=cpp,
-                              record_path=os.path.join(args.out_dir, f"{job['job_id']}.mp4"),
-                              save_frames_dir=os.path.join(args.save_frames, args.map) if args.save_frames else None,
-                              log=log, cap=cap, frame_every_s=args.frame_every)
-            log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
-                f"diag={json.dumps(res['diagnostics'])[:300]}")
-            if res["aborted"]:
-                log("aborted by F8; not recording this job")
+            r = runner.run(job)
+            if r is None:
                 break
-            results.append({"job_id": job["job_id"], "strategy_id": job["strategy_id"], "worker": args.worker,
-                            "map": args.map, "points": res["points"], "survival_s": res["survival_s"],
-                            "diagnostics": res["diagnostics"]})
+            results.append(r)
             with open(args.results, "w") as f:  # write after every job so a crash loses nothing
                 json.dump(results, f, indent=2)
     finally:
-        game.close()
+        runner.close()
 
 
 if __name__ == "__main__":

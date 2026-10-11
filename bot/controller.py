@@ -47,6 +47,7 @@ class Keys:
         self.pdi = pydirectinput
         self.held = set()
         self.mouse_down_until = 0.0
+        self.rx = self.ry = 0.0  # sub-count remainders, so slow scans and fine aim aren't truncated away
 
     def hold(self, key, on):
         if on and key not in self.held:
@@ -57,8 +58,14 @@ class Keys:
             self.held.discard(key)
 
     def move(self, dx, dy):
-        if dx or dy:
-            self.pdi.moveRel(int(dx), int(dy), relative=True, disable_mouse_acceleration=True)
+        self.rx += dx
+        self.ry += dy
+        ix, iy = int(self.rx), int(self.ry)
+        if ix or iy:
+            self.pdi.moveRel(ix, iy, relative=True, disable_mouse_acceleration=True)
+            self.rx -= ix
+            self.ry -= iy
+        return iy
 
     def fire(self, ms, now):
         if now >= self.mouse_down_until:
@@ -118,6 +125,9 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     last_reload = 0.0
     lock_losses = 0
     game_over = False
+    go_hits = 0
+    pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
+    pitch_cap = 160.0 * counts_per_px  # mouse counts for ~160 screen px of pitch either way
 
     t0 = time.time()
     t_hud = t_frame_save = 0.0
@@ -150,7 +160,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 if int(el) % 2 == 0:
                     a = hud.read_ammo(frame)
                     ammo = a if a else ammo
-                    if el > 5 and hud.game_over(frame):
+                    go_hits = go_hits + 1 if (el > 5 and hud.game_over(frame)) else 0
+                    if go_hits >= 2:  # two consecutive reads, 2 s apart
                         game_over = True
                         log(f"[ctl] game over at {el:.1f}s")
                         break
@@ -178,7 +189,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                     acquiring = (tgt.id, n)
                 k = S["aim_gain"] * counts_per_px
                 step = S["aim_max_step"]
-                keys.move(max(-step, min(step, obs.err_x * k)), max(-step, min(step, obs.err_y * k)))
+                mx = max(-step, min(step, obs.err_x * k))
+                my = max(-step, min(step, obs.err_y * k))
+                my = max(-pitch_cap - pitch, min(pitch_cap - pitch, my))  # never stare at the ceiling/floor
+                pitch += keys.move(mx, my)
                 if err < S["fire_radius_px"]:
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
@@ -205,7 +219,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 for k_ in ("s", "a", "d"):
                     keys.hold(k_, False)
                 dt = 1 / max(vp.fps, 10)
-                keys.move(S["scan_turn_px"] * dt * counts_per_px, 0)
+                level = -0.25 * pitch if abs(pitch) > 2 else 0.0  # ease back to the horizon while scanning
+                pitch += keys.move(S["scan_turn_px"] * dt * counts_per_px, level)
                 if (S["reload_when_clear_at"] and ammo and ammo[0] < S["reload_when_clear_at"]
                         and ammo[1] > 0 and now - last_reload > 3):
                     keys.press("r")

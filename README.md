@@ -70,7 +70,15 @@ python -m bot.worker run --baseline 2 --results baseline.json    # without the o
 | `bot/game.py` | `PortGame`: isolated Chrome on the dGPU, load and start, restart by reload (~47 s from cache), real-click pointer lock with pause recovery, viewport alignment |
 | `bot/hudread.py` | easyocr on fixed 720p crops: points (smoothed, rejects jumps), ammo `mag/reserve`, GAME OVER and scoreboard detection |
 | `bot/controller.py` | `run_episode`: executes all 12 strategy params, holds and releases keys safely, F8 abort, computes the §5.4 diagnostics, records the HUD video, saves raw frames for retraining |
-| `bot/worker.py` | jobs → episodes → results.json, written after every job |
+| `bot/worker.py` | `Runner` (one open game session) and the CLI: jobs → episodes → results.json, written after every job |
+| `bot/loop.py` | Closed loop on one laptop: Jeffrey's `evolution.py` state machine + `Runner`. It plays pending jobs, ingests results and proposes the next generation. Uses `LuminalClient` if `<evo-dir>/.env` has a key, otherwise the offline mutation client (children marked `fallback`). |
+
+```bash
+git worktree add D:/czb/evo origin/jeffrey          # the evolution code, untouched
+python -m bot.loop --evo-dir D:/czb/evo --state D:/czb/evo_state/kino.json --generations 3
+```
+
+Controller safety rules (not in the genome): pitch is dead-reckoned and capped at about ±160 screen px, and it levels back to the horizon while scanning, so one bad aim frame can't leave the bot staring at the ceiling. Sub-count mouse remainders carry over between frames. Game over must be read twice in a row.
 
 **Parameter units (agreed with the strategy contract).** Frames are 1280×720, so `fire_radius_px` and `retreat_box_h` are 720p pixels.
 - `aim_gain` = fraction of the on-screen error corrected per frame. Mouse counts = error × `aim_gain` × `counts_per_px`.
@@ -79,7 +87,7 @@ python -m bot.worker run --baseline 2 --results baseline.json    # without the o
 
 **Calibration on this laptop:** 20 counts turns the view 29.5 px (5 of 6 moves agree), so `counts_per_px = 0.678`. The game ignores mouse look for about 2 s during the spawn "Round" banner, so calibration waits 6 s.
 
-**First baseline episode:** 42.5 s, 0 points (stood in spawn and was killed), 15 fps loop.
+**Baseline episodes on Kino** (deliberately mediocre: slow scan, conf 0.35): killed in round 1 after 39–55 s, 0–2 shots. In the worst case, zombies walk up from behind because a full 360° scan takes about 2 minutes at `scan_turn_px=60`. Evolution should push `scan_turn_px` up.
 
 The main weakness is detection on the port. The detector sees zombies in only 10% of frames, and it missed a dark zombie in a doorway. Episodes now save raw port frames, which feed the retraining step.
 
