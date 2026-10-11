@@ -1,1 +1,11 @@
 .gyst/
+.venv/
+__pycache__/
+dataset/
+*.pt
+runs/
+*.engine
+*.onnx
+*.ts
+*.mp4
+*.whl

@@ -1,0 +1,10 @@
+# Install torch first from the CUDA index (see README in the plan):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+ultralytics==8.4.175
+dxcam
+mss
+opencv-python
+numpy
+pyyaml
+keyboard
+pydirectinput-rgx
