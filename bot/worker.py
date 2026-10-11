@@ -98,6 +98,7 @@ class Runner:
         self.map_id, self.out_dir, self.max_s = map_id, out_dir, max_s
         self.save_frames, self.frame_every = save_frames, frame_every
         self.worker = worker or socket.gethostname()
+        self.reporter = None
         from bot.shared import team_calibration
         shared = team_calibration(worker or socket.gethostname())  # MongoDB machines/<this laptop>, else the team default
         self.cpp = shared["counts_per_px"] if shared else load_calib().get("counts_per_px")
@@ -119,6 +120,20 @@ class Runner:
 
     def run(self, job):
         """Play one episode for a job. Returns a result dict in the ingest format, or None if aborted (F8)."""
+        if self.db is not None and self.experiment_id and self.reporter is None:
+            from common.monitoring import Reporter
+            self.reporter = Reporter(self.db, self.experiment_id, 'vision', self.worker)
+
+        def progress(frame=None, **values):  # live status + thumbnail for the dashboard (Jeffrey)
+            if self.reporter:
+                import base64
+                if frame is not None:
+                    ok, encoded = cv2.imencode('.jpg', cv2.resize(frame, (640, 360)), [cv2.IMWRITE_JPEG_QUALITY, 65])
+                    if ok:
+                        values['frame'] = base64.b64encode(encoded).decode('ascii')
+                self.reporter.emit(worker=self.worker, state='running', job_id=job['job_id'],
+                                   generation=job.get('generation', 0), **values)
+        progress(action='STARTING')
         if not self.fresh:
             self.game.start()  # reload = fresh game; assets come from cache
         self.fresh = False
@@ -130,7 +145,10 @@ class Runner:
                           save_frames_dir=os.path.join(self.save_frames, self.map_id) if self.save_frames else None,
                           log=log, cap=self.cap, frame_every_s=self.frame_every,
                           map_name=self.map_id, db=self.db, experiment_id=self.experiment_id, job_id=job["job_id"],
-                          live_view=self.live_view)
+                          live_view=self.live_view, on_progress=progress if self.reporter else None)
+        if self.reporter:
+            self.reporter.emit(worker=self.worker, state='aborted' if res['aborted'] else 'complete',
+                               job_id=job['job_id'], points=res['points'], elapsed_s=res['survival_s'])
         log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
             f"diag={json.dumps(res['diagnostics'])[:300]}")
         if res["aborted"]:
@@ -141,6 +159,9 @@ class Runner:
                 "diagnostics": res["diagnostics"]}
 
     def close(self):
+        if self.reporter:
+            self.reporter.emit(worker=self.worker, state='stopped')
+            self.reporter.close()
         try:
             self.cap.close()
         finally:
