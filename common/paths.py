@@ -19,10 +19,20 @@ def data_path(*parts, mkdir_parent=True):
 
 
 def resolve_weights(configured):
-    """The configured detector weights if present, else the first local copy that exists."""
+    """The configured detector weights if present, else the first local copy that exists.
+
+    A TensorRT engine is skipped when the .pt next to it is newer: it was built from older weights.
+    Rebuild it with `python scripts/check_setup.py --export-engine`.
+    """
     candidates = [configured, data_path("models", "zombies_v1.engine", mkdir_parent=False),
                   str(ROOT / "model" / "zombies_v1.engine"), str(ROOT / "model" / "zombies_v1.pt")]
     for c in candidates:
-        if c and Path(c).exists():
-            return str(c)
+        if not c or not Path(c).exists():
+            continue
+        p = Path(c)
+        pt = p.with_suffix(".pt")
+        if p.suffix == ".engine" and pt.exists() and pt.stat().st_mtime > p.stat().st_mtime:
+            print(f"[weights] {p.name} is older than {pt.name}; skipping the stale engine")
+            continue
+        return str(c)
     raise FileNotFoundError(f"No detector weights found; tried {candidates}")
