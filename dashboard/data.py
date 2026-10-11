@@ -1,4 +1,5 @@
 """Read-only, experiment-scoped snapshots. Never return credentials or raw errors."""
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from statistics import mean
@@ -207,6 +208,10 @@ class MongoSource:
                 {'$match': q}, {'$group': {'_id': '$status', 'count': {'$sum': 1}}}])}
             result['footage'] = clean([{k: f.get(k) for k in FOOTAGE_FIELDS if k in f} for f in self.db.footage.find(
                 {**q, 'kind': 'hud_video'}, {k: 1 for k in FOOTAGE_FIELDS}).sort('created_at', -1).limit(24)])
+            showcase = os.environ.get('SHOWCASE_EXPERIMENT', 'rishit-kino_v6')
+            result['showcase'] = dict(experiment_id=showcase, footage=clean([
+                {k: f.get(k) for k in FOOTAGE_FIELDS if k in f} for f in self.db.footage.find(
+                    {'experiment_id': showcase, 'kind': 'hud_video'}, {k: 1 for k in FOOTAGE_FIELDS}).sort('created_at', 1).limit(40)]))
             return result
 
     def history(self, offset=0):

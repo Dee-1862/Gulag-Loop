@@ -15,16 +15,24 @@ function agents(items=[]){
 function openAgent(name){selectedPersona=name;const a=snapshot?.agents?.find(x=>x.persona===name);$('detail-title').textContent=name;$('detail-state').textContent=`${a?.state||'waiting'} · ${a?.tokens!=null?fmt(a.tokens)+' tokens in last recorded attempt':'No usage recorded'}`;$('detail-rationale').textContent=proposalFor(name)?.rationale||'No saved proposal yet. A rationale appears after the orchestrator persists this agent’s result.';$('detail-changes').innerHTML=changesHTML(proposalFor(name));if(!$('detail').open)$('detail').showModal();}
 // When nothing is live, the viewport plays the experiment's latest recorded game (labelled as a replay).
 let streamBroken=0;
-function hideReplay(){const v=$('replay');if(v){v.hidden=true;try{v.pause();}catch{}}}
+function hideReplay(){const m=$('replay-mode');if(m)m.hidden=true;const v=$('replay');if(v){v.hidden=true;try{v.pause();}catch{}}}
+let replayFirst=false;
 function showReplay(data,query){
- // best-scoring recorded game of this experiment (latest as tie-break)
- const f=[...(data.footage||[])].filter(x=>x&&x.job_id).sort((a,b)=>(b.fitness??-1)-(a.fitness??-1))[0];if(!f)return false;
+ // Recorded games of the showcase experiment (rishit-kino_v6 by default), shown when nothing is live.
+ // BEST = most kills (fitness breaks ties); FIRST = the earliest game, before any learning, for comparison.
+ const sc=data.showcase?.footage?.length?data.showcase:{experiment_id:null,footage:data.footage||[]};
+ const list=[...sc.footage].filter(x=>x&&x.job_id);if(!list.length)return false;
+ const best=[...list].sort((a,b)=>(b.kills??0)-(a.kills??0)||(b.fitness??-1)-(a.fitness??-1))[0];
+ const first=[...list].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)))[0];
+ const f=replayFirst?first:best;
  let v=$('replay');
  if(!v){v=document.createElement('video');v.id='replay';v.className='replay';v.muted=true;v.autoplay=true;v.loop=true;v.playsInline=true;$('viewport').insertBefore(v,$('frame'));}
- const q=new URLSearchParams(query);q.set('job',f.job_id);const src='/api/video?'+q;
+ const q=new URLSearchParams(query);q.set('job',f.job_id);if(sc.experiment_id){q.set('experiment',sc.experiment_id);q.set('experiment_id',sc.experiment_id);}
+ const src='/api/video?'+q;
  if(v.getAttribute('src')!==src){v.src=src;try{const p=v.play();if(p&&p.catch)p.catch(()=>{});}catch{}}
  v.hidden=false;$('frame').hidden=true;$('frame-empty').hidden=true;
- $('frame-label').textContent=`BEST REPLAY · GEN ${f.generation??0}${f.fitness!=null?' · FITNESS '+Math.round(f.fitness):''}`;return true;
+ const mode=$('replay-mode');if(mode){mode.hidden=false;mode.textContent=replayFirst?'SHOW BEST':'SHOW FIRST (0 KILLS)';}
+ $('frame-label').textContent=`${replayFirst?'FIRST ITERATION':'BEST REPLAY'} · ${f.kills??0} KILLS${f.fitness!=null?' · FITNESS '+Math.round(f.fitness):''}`;return true;
 }
 function clearFrame(){hideReplay();if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('frame').hidden=true;$('frame-empty').hidden=false;$('frame').removeAttribute('src');}
 function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}
@@ -338,3 +346,4 @@ function enableControl(){
    cancelSnapshot();refresh();}
   catch(e){alert('Could not start: '+e.message);}});
 }
+$('replay-mode')?.addEventListener('click',()=>{replayFirst=!replayFirst;if(snapshot)showReplay(snapshot,params());});
