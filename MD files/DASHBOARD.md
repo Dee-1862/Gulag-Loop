@@ -31,6 +31,14 @@ Use `--port 8766` if the default port is already occupied.
 
 ## What each panel shows
 
+- **MongoDB Records tab:** inspect up to 25 recent saved runs, including points,
+  survival, fitness, worker identity, and diagnostics. Inspect up to 50 recent
+  strategies with all 12 settings, rationales, parent links, and sampled evaluation
+  scores. Filter the latest 50 jobs by status and review the latest 20 Luminal call
+  attempts. Click a completed job to open its run, or a strategy link to inspect
+  its settings. Queue readiness uses full experiment job totals. The Overview also
+  summarizes the latest saved evaluation, even without live worker telemetry.
+  Open directly at http://127.0.0.1:8765/#records.
 - **Data Flow tab:** an interactive map of the game, vision, worker, MongoDB
   collections, parent selection, four Luminal personas, validation, and job feedback
   loop. Click a stage or arrow to inspect its inputs and outputs. Observed snapshots
@@ -54,6 +62,12 @@ queries are bounded to 500 runs/jobs/playbooks and 200 calls, while collection c
 and job-status totals cover the selected experiment. A completed attempt reflects
 provider/validation success; the rationale appears after the orchestrator commits
 its transaction. Prior saved metadata can remain visible while the next call runs.
+Records are scoped to the selected experiment, use explicit field projections, and
+are read-only. Run and strategy selections persist across polling. Strategy scores
+use the recent run sample; they are not claims of all-time performance. Parent or
+job links outside the returned record window are shown as unavailable. Empty call
+history does not imply the four personas have run. Saved run metrics are displayed
+separately from current worker telemetry, with completion timestamps.
 
 The Data Flow tab uses this same snapshot and refresh controls. Its architecture
 stays available without a database connection. Arrows describe implemented code

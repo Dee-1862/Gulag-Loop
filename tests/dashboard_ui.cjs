@@ -92,3 +92,24 @@ test('all diagram arrows meet their source and destination; interactions survive
  h.click('tour-next');assert.equal(h.get('inspect-title').textContent,'Vision pipeline');
  h.w.eval('render({connected:false,mode:"live"})');assert.equal(h.get('inspect-state').textContent,'NO TELEMETRY');
 });
+test('MongoDB records show saved results without live workers and preserve inspection choices',async t=>{
+ const h=harness(t);await h.start();
+ const snapshot={...data(),latest_run:{job_id:'job-1',points:0,survival_s:44.7,fitness:223.5,completed_at:'2026-10-11T20:10:00Z'},records:{
+  runs:[{_id:'run-1',job_id:'job-1',strategy_id:'baseline',points:0,survival_s:44.7,fitness:223.5,diagnostics:{time_no_target_pct:97.6,overshoot_rate:0,loop_fps:16.1,det_count_avg:.02}}],
+  strategies:[{_id:'child',persona:'Bold',generation:1,parent_ids:['baseline'],params:{aim_gain:.7},rationale:'<img src=x onerror=alert(1)>',evaluations:0},{_id:'baseline',persona:'Baseline',generation:0,parent_ids:[],params:{aim_gain:.8,det_conf:.35,aim_y_offset:.15,strafe_mode:'none'},rationale:'Starting settings.',evaluations:1,mean_fitness:223.5}],
+  jobs:[{job_id:'job-1',status:'done',strategy_id:'baseline'},{job_id:'job-2',status:'queued',strategy_id:'child'}],calls:[]}};
+ h.respond('/api/snapshot',snapshot);await settle();h.click('open-records');
+ assert.equal(h.get('view-records').hidden,false);assert.equal(h.get('view-overview').hidden,true);assert.equal(h.w.location.hash,'#records');
+ assert.equal(h.get('saved-points').textContent,'0');assert.equal(h.get('saved-survival').textContent,'44.7s');
+ assert.match(h.get('saved-diagnostics').textContent,/97.6%/);assert.match(h.get('saved-diagnostics').textContent,/0%/);
+ assert.equal(h.get('saved-rationale').querySelector('img'),null);
+ assert.match(h.get('saved-calls').textContent,/No Luminal calls/);
+ h.get('saved-parents').querySelector('button').click();assert.equal(h.get('record-strategy').value,'baseline');
+ assert.match(h.get('saved-params').textContent,/0.8/);assert.match(h.get('saved-params').textContent,/0.35/);assert.match(h.get('saved-params').textContent,/0.15/);assert.match(h.get('saved-diagnostics').textContent,/0.02/);
+ h.change('record-job-filter','queued');assert.equal(h.get('saved-jobs').querySelectorAll('tr').length,1);assert.match(h.get('saved-jobs').textContent,/job-2/);
+ h.w.eval('render('+JSON.stringify(snapshot)+')');assert.equal(h.get('record-strategy').value,'baseline');
+ assert.equal(h.get('record-job-filter').value,'queued');
+ h.get('tab-flow').dispatchEvent(new h.w.KeyboardEvent('keydown',{key:'End'}));assert.equal(h.get('tab-records').getAttribute('aria-selected'),'true');
+ h.w.eval('render({connected:false,mode:"live"})');assert.equal(h.get('saved-run-content').hidden,true);assert.equal(h.get('saved-strategy-content').hidden,true);
+ assert.equal(h.get('record-run').options.length,1);
+});

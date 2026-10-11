@@ -86,6 +86,31 @@ class DashboardTests(TestCase):
         data=self.snapshot([dict(component='vision',state='running',updated_at=self.now,frame='private-frame')])
         self.assertNotIn('private-frame',json.dumps(data))
 
+    def test_saved_records_include_settings_lineage_and_zero_scores(self):
+        book=dict(_id='baseline',persona='Baseline',generation=0,parent_ids=[],
+                  params={'aim_gain':.8,'target_rule':'center','unrelated_secret':'do-not-return'},
+                  rationale='Starting settings.', unrelated_secret='do-not-return')
+        run=dict(job_id='job',strategy_id='baseline',fitness=0,points=0,survival_s=0,
+                 diagnostics={'loop_fps':16.1,'frame':'private-image'})
+        data=self.snapshot(runs=[run],books=[book])
+        saved=data['records']['strategies'][0]
+        self.assertEqual(saved['params'],{'aim_gain':.8,'target_rule':'center'})
+        self.assertEqual(saved['parent_ids'],[])
+        self.assertEqual((saved['evaluations'],saved['mean_fitness']),(1,0))
+        self.assertEqual(data['records']['runs'][0]['diagnostics'],{'loop_fps':16.1})
+        self.assertNotIn('do-not-return',json.dumps(data))
+
+    def test_record_lists_are_bounded_and_do_not_include_raw_provider_content(self):
+        data=self.snapshot(runs=[dict(job_id=str(i),strategy_id='p',fitness=i) for i in range(60)],
+                           books=[dict(_id=str(i),generation=i) for i in range(60)],
+                           calls=[dict(persona='Bold',generation=1,ok=False,error_type='ValueError',
+                                       raw_response='do-not-return') for _ in range(30)])
+        self.assertEqual(len(data['records']['runs']),25)
+        self.assertEqual(len(data['records']['strategies']),50)
+        self.assertEqual(len(data['records']['calls']),20)
+        self.assertEqual(data['records']['calls'][0]['error_type'],'ValueError')
+        self.assertNotIn('do-not-return',json.dumps(data))
+
     def test_demo_is_explicit_and_no_credentials_means_disconnected(self):
         demo=DemoSource().snapshot('demo')
         self.assertEqual(demo['mode'],'demo')
