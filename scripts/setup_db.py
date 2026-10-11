@@ -9,12 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pymongo import ASCENDING
-from pymongo.errors import CollectionInvalid
+from pymongo.errors import CollectionInvalid, OperationFailure
 from pymongo.operations import SearchIndexModel
 
 from common.db import (
-    EPISODES, EPISODES_VEC_INDEX, EXPERIMENTS, GENERATIONS, HUD_STATES, LESSON_EMBED_DIMS,
-    LESSON_STATUSES, LESSONS, LESSONS_VEC_INDEX, PLAYBOOKS, SITUATIONS, STATE_DIMS,
+    EPISODES, EPISODES_VEC_INDEX, EXPERIMENTS, GENERATIONS, HUD_STATES, JOBS, LESSON_EMBED_DIMS,
+    LESSON_STATUSES, LESSONS, LESSONS_VEC_INDEX, LLM_CALLS, PLAYBOOKS, RUNS, SITUATIONS, STATE_DIMS,
     WORKING_MEMORY, get_db,
 )
 
@@ -72,8 +72,12 @@ def create_collections(db):
         db.create_collection(LESSONS, validator=LESSON_SCHEMA)
         print(f"created {LESSONS} (with schema validation)")
     else:
-        db.command("collMod", LESSONS, validator=LESSON_SCHEMA)
-    for name in (EPISODES, PLAYBOOKS, SITUATIONS, EXPERIMENTS, GENERATIONS, WORKING_MEMORY):
+        try:
+            db.command("collMod", LESSONS, validator=LESSON_SCHEMA)
+        except OperationFailure:
+            print(f"{LESSONS} exists; keeping its validator (updating it needs the dbAdmin role)")
+    for name in (EPISODES, PLAYBOOKS, SITUATIONS, EXPERIMENTS, GENERATIONS, WORKING_MEMORY,
+                 RUNS, JOBS, LLM_CALLS):
         try:
             db.create_collection(name)
             print(f"created {name}")
@@ -89,6 +93,10 @@ def create_indexes(db):
     db[EPISODES].create_index([("arm", ASCENDING), ("ts", ASCENDING)])
     db[LESSONS].create_index([("arm", ASCENDING), ("status", ASCENDING)])
     db[WORKING_MEMORY].create_index("expires_at", expireAfterSeconds=0)
+    db[PLAYBOOKS].create_index([("experiment_id", ASCENDING), ("generation", ASCENDING)])
+    db[JOBS].create_index([("experiment_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
+    db[RUNS].create_index([("experiment_id", ASCENDING), ("strategy_id", ASCENDING)])
+    db[LLM_CALLS].create_index([("experiment_id", ASCENDING), ("generation", ASCENDING)])
     print("regular and TTL indexes ok")
 
 

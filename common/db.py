@@ -23,6 +23,9 @@ LESSONS = "lessons"                # semantic: lessons with evidence and status
 SITUATIONS = "situations"          # taxonomic: situation categories as a tree
 EXPERIMENTS = "experiments"        # provenance: run settings and seeds
 GENERATIONS = "generations"        # provenance: per-arm, per-generation scores
+RUNS = "runs"                      # episodic: one real-game evaluation of a playbook
+JOBS = "jobs"                      # evaluation queue; workers claim atomically
+LLM_CALLS = "llm_calls"            # provenance: every Luminal attempt (model, latency, tokens)
 
 EPISODES_VEC_INDEX = "episodes_vec"
 LESSONS_VEC_INDEX = "lessons_vec"
