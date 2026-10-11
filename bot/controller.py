@@ -48,6 +48,7 @@ class Keys:
         self.held = set()
         self.mouse_down_until = 0.0
         self.rx = self.ry = 0.0  # sub-count remainders, so slow scans and fine aim aren't truncated away
+        self.sent_x = self.sent_y = 0  # counts actually sent since the last frame (ego-motion for the tracker)
 
     def hold(self, key, on):
         if on and key not in self.held:
@@ -65,7 +66,14 @@ class Keys:
             self.pdi.moveRel(ix, iy, relative=True, disable_mouse_acceleration=True)
             self.rx -= ix
             self.ry -= iy
+            self.sent_x += ix
+            self.sent_y += iy
         return iy
+
+    def take_sent(self):
+        sx, sy = self.sent_x, self.sent_y
+        self.sent_x = self.sent_y = 0
+        return sx, sy
 
     def fire(self, ms, now):
         if now >= self.mouse_down_until:
@@ -127,6 +135,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     game_over = False
     go_hits = 0
     pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
+    last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
+    sweep_t0, sweep_dir = time.time(), 1
     pitch_cap = 160.0 * counts_per_px  # mouse counts for ~160 screen px of pitch either way
 
     t0 = time.time()
@@ -142,7 +152,9 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 keys.release_all()
                 lock_losses += 1
                 if not game.ensure_locked():
-                    log("[ctl] could not re-acquire pointer lock; ending episode")
+                    # the death screen releases the mouse; a lost lock that can't be re-acquired = dead
+                    game_over = True
+                    log(f"[ctl] pointer lock gone at {el:.1f}s (death screen); ending episode")
                     break
             raw = cap.grab()
             frame = cv2.resize(raw, (1280, 720), interpolation=cv2.INTER_AREA)
@@ -167,7 +179,9 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         break
                 t_hud = now
 
-            obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame)
+            sx, sy = keys.take_sent()
+            obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame,
+                          ego=(-sx / counts_per_px, -sy / counts_per_px))
             n += 1
             det_sum += obs.telemetry["n_boxes"]
             tgt = obs.target
@@ -178,6 +192,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 close_calls += 1
 
             if tgt is not None:
+                last_seen_t = now
+                last_seen_dir = 1 if obs.err_x >= 0 else -1
                 aim_frames += 1
                 err = math.hypot(obs.err_x, obs.err_y)
                 # overshoot: sign flip of horizontal error on the SAME target (tracker keeps ids stable)
@@ -223,7 +239,15 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                     keys.hold(k_, False)
                 dt = 1 / max(vp.fps, 10)
                 level = -0.25 * pitch if abs(pitch) > 2 else 0.0  # ease back to the horizon while scanning
-                pitch += keys.move(S["scan_turn_px"] * dt * counts_per_px, level)
+                if now - last_seen_t < 1.5:
+                    # just lost it: snap toward where it left the screen (it usually walked off the edge)
+                    turn = last_seen_dir * max(2 * S["scan_turn_px"], 300)
+                else:
+                    # sweep: 2 s one way, 1 s back -> re-checks the front arc while drifting a full circle
+                    if now - sweep_t0 > (2.0 if sweep_dir > 0 else 1.0):
+                        sweep_dir, sweep_t0 = -sweep_dir, now
+                    turn = sweep_dir * S["scan_turn_px"]
+                pitch += keys.move(turn * dt * counts_per_px, level)
                 if (S["reload_when_clear_at"] and ammo and ammo[0] < S["reload_when_clear_at"]
                         and ammo[1] > 0 and now - last_reload > 3):
                     keys.press("r")

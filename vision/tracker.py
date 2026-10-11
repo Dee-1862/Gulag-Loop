@@ -40,6 +40,12 @@ class Track:
         self.trail.append((box.cx, box.cy))
         del self.trail[:-12]
 
+    def shift(self, dx, dy):
+        """Ego-motion: when the camera turns, everything on screen slides the other way."""
+        b = self.box
+        self.box = Box(b.x1 + dx, b.y1 + dy, b.x2 + dx, b.y2 + dy, b.conf)
+        self.trail = [(x + dx, y + dy) for x, y in self.trail]
+
     def predict(self):
         """Coast through a missed detection by sliding the box along its velocity."""
         b = self.box
@@ -48,18 +54,22 @@ class Track:
 
 
 class Tracker:
-    def __init__(self, iou_thresh=0.2, max_missed=6, dist_frac=0.12):
+    def __init__(self, iou_thresh=0.2, max_missed=12, dist_frac=0.12, lock_coast=10):
         self.iou_thresh = iou_thresh
         self.max_missed = max_missed
         self.dist_frac = dist_frac
         self.tracks = []
         self.next_id = 1
+        self.lock_coast = lock_coast  # frames a locked zombie may go undetected before the lock drops
         self.locked_id = None
         self.lock_frames = 0
 
-    def update(self, boxes, frame_w):
+    def update(self, boxes, frame_w, ego=(0.0, 0.0)):
+        """ego = (dx, dy) screen-px shift of the scene caused by our own mouse movement since last frame."""
         for t in self.tracks:
             t.age += 1
+            if ego[0] or ego[1]:
+                t.shift(*ego)
         # greedy match by IoU, falling back to center distance for fast-moving small boxes
         pairs = []
         for ti, t in enumerate(self.tracks):
@@ -90,9 +100,10 @@ class Tracker:
         return self.active()
 
     def active(self):
-        return [t for t in self.tracks if t.confirmed and t.missed <= 2]
+        return [t for t in self.tracks if t.confirmed and
+                (t.missed <= 2 or (t.id == self.locked_id and t.missed <= self.lock_coast))]
 
-    def select(self, rule, crosshair, switch_margin=1.3):
+    def select(self, rule, crosshair, switch_margin=1.6):
         """Pick a target with hysteresis: only abandon the current lock if another zombie
         scores switch_margin x better (or the locked one is gone)."""
         tracks = self.active()
@@ -106,9 +117,11 @@ class Tracker:
             score = lambda t: t.box.w * t.box.h
         else:
             score = lambda t: 1.0 / (1.0 + math.hypot(t.box.cx - cx, t.box.cy - cy))
-        best = max(tracks, key=score)
         cur = next((t for t in tracks if t.id == self.locked_id), None)
-        if cur is not None and score(best) < switch_margin * score(cur):
+        fresh = [t for t in tracks if t.missed == 0] or tracks
+        best = max(fresh, key=score)
+        # stay on the current zombie unless another is clearly better (or it has been gone too long)
+        if cur is not None and (cur.missed > 0 or score(best) < switch_margin * score(cur)):
             best = cur
         if best.id == self.locked_id:
             self.lock_frames += 1
