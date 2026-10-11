@@ -184,6 +184,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             if n % 30 == 0 and not game.locked():  # paused / lost focus: release keys, re-acquire
                 keys.release_all()
                 lock_losses += 1
+                if getattr(game, "page", None) is not None and game.page.is_closed():
+                    raise RuntimeError("browser closed mid-episode")  # not a death: don't score this game
                 if not game.ensure_locked():
                     # the death screen releases the mouse; a lost lock that can't be re-acquired = dead
                     game_over = True
