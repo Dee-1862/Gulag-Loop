@@ -14,6 +14,8 @@ RECORD_FIELDS = {
     'calls': ('persona','model','generation','strategy_id','ok','attempt','tokens','latency_ms','created_at','error_type','http_status'),
 }
 
+FOOTAGE_FIELDS = ('job_id', 'strategy_id', 'generation', 'points', 'kills', 'survival_s', 'fitness', 'bytes', 'created_at')
+
 def record_rows(kind, documents, limit):
     rows = [{k: doc[k] for k in RECORD_FIELDS[kind] if k in doc} for doc in documents[:limit]]
     if kind == 'strategies':
@@ -154,7 +156,21 @@ class MongoSource:
             result = assemble(exp, jobs, runs, calls, playbooks, signals, counts)
             result['jobs'] = {r['_id']: r['count'] for r in self.db.jobs.aggregate([
                 {'$match': q}, {'$group': {'_id': '$status', 'count': {'$sum': 1}}}])}
+            result['footage'] = clean([{k: f.get(k) for k in FOOTAGE_FIELDS if k in f} for f in self.db.footage.find(
+                {**q, 'kind': 'hud_video'}, {k: 1 for k in FOOTAGE_FIELDS}).sort('created_at', -1).limit(24)])
             return result
+
+    def video(self, experiment_id, job_id):
+        """Episode recording (MP4 bytes) from the GridFS bucket the bot's publisher writes; None if absent."""
+        import gridfs
+        if not job_id:
+            return None
+        doc = self.db.footage.find_one({'experiment_id': experiment_id, 'job_id': job_id, 'kind': 'hud_video'},
+                                       {'file_id': 1, 'gridfs_bucket': 1})
+        if not doc:
+            return None
+        bucket = gridfs.GridFSBucket(self.db, bucket_name=doc.get('gridfs_bucket', 'footage'))
+        return bucket.open_download_stream(doc['file_id']).read()
 
     def frame(self, experiment_id, identity='', job_id=''):
         import base64

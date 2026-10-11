@@ -75,6 +75,27 @@ def handler_for(backend):
             self.send_header('X-Content-Type-Options','nosniff')
             self.end_headers()
             self.wfile.write(data)
+        def send_video(self, data):
+            size=len(data)
+            rng=self.headers.get('Range','')
+            start,end,status=0,size-1,200
+            if rng.startswith('bytes='):
+                a,_,b=rng[6:].split(',')[0].partition('-')
+                if a:
+                    start=int(a); end=int(b) if b else size-1
+                else:
+                    start=max(0,size-int(b))
+                end=min(end,size-1)
+                status=206
+            self.send_response(status)
+            self.send_header('Content-Type','video/mp4')
+            self.send_header('Accept-Ranges','bytes')
+            self.send_header('Content-Length',str(end-start+1))
+            if status==206:
+                self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+            self.send_header('Cache-Control','private, max-age=600')
+            self.end_headers()
+            self.wfile.write(data[start:end+1])
         def do_GET(self):
             url=urlparse(self.path)
             args=parse_qs(url.query)
@@ -94,6 +115,12 @@ def handler_for(backend):
                     self.send(dict(experiments=source.experiments() if source else []))
                 elif url.path=='/api/snapshot':
                     self.send(backend.snapshot(experiment,demo))
+                elif url.path=='/api/video':
+                    video=backend.live.video(experiment, args.get('job',[''])[0]) if backend.live and not demo else None
+                    if not video:
+                        self.send(b'', 'video/mp4', 404)
+                        return
+                    self.send_video(video)
                 elif url.path=='/api/frame':
                     frame=backend.live.frame(experiment, args.get('worker',[''])[0], args.get('job',[''])[0]) if backend.live and not demo else None
                     self.send(frame or b'', 'image/jpeg', 200 if frame else 204)
