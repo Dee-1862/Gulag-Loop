@@ -1,0 +1,4 @@
+# The dashboard does not require the Windows game or vision dependencies.
+pymongo>=4.10,<5
+python-dotenv>=1.0
+psutil>=5.9   # optional: lets the local dashboard see/stop workers started from a terminal

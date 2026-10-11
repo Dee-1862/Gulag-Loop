@@ -105,6 +105,19 @@ Detector weights: `config.yaml` first, else `model/zombies_v1.engine` or `model/
 - **Rishit's safety rules**: engages only zombies confirmed over 3+ frames, fires when the crosshair is on the body, caps and levels pitch, reloads on empty, reads game-over twice.
 - **HUD**: red layer on every zombie, highlighted head zone on the target, and a compass strip with remembered zombies, entry points and the active-zombie count.
 
+### Team settings live in MongoDB
+
+One place for every laptop instead of per-laptop files (`calibration.json` / `strategies.json` stay as offline fallbacks):
+
+```bash
+python -m bot.worker calibrate                       # saves to MongoDB machines/<this laptop> too
+python -m common.machines list                       # every laptop's calibration + what this one uses
+python -m common.machines publish-strategies zombie_bot/strategies.json
+python -m bot.worker run --play champion --games 3   # best evolved strategy, straight from MongoDB
+```
+
+A laptop that hasn't calibrated uses the **team default** (median of all laptops). `champion` is the current best playbook from the MongoDB experiments; named styles (`best`, `aggressive`, `kiter`, ...) come from the `strategies` collection. Rishit's bundle reads the same data with `--strategy mongodb --name champion`.
+
 ## Run the evolution loop on MongoDB (manual steps)
 
 ```bash
@@ -163,3 +176,12 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 - No gameplay improvement has been measured yet; all test runs are synthetic.
 - Cluster runs MongoDB 8.0 (Atlas free tier); we make no MongoDB 9.0 performance claims.
 - The game is an unofficial fan port; we link to it and include none of its files.
+
+## Backend dashboard
+
+Run `.venv/bin/python -m dashboard.server` and open http://127.0.0.1:8765 to watch
+vision/game telemetry, MongoDB activity, and all four Luminal agents. Install the
+lightweight dependencies with `.venv/bin/python -m pip install -r requirements-dashboard.txt`.
+Use `--demo` for a clearly labeled preview without a game or database connection.
+See [dashboard setup and controls](MD%20files/DASHBOARD.md), including the difference
+between pausing dashboard refresh and stopping the game worker.

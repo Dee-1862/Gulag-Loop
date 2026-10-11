@@ -118,7 +118,7 @@ def main():
         checks = [
             ("zombie memory counted an active zombie", d["max_active_zombies"] >= 1),
             ("damage flash detected", d["damage_events"] >= 1),
-            ("hit with nothing visible -> unseen hit", d["unseen_hits"] >= 1),
+            ("hit with nothing visible -> evasive turn (Rishit's damage reaction)", d.get("evades_from_unseen_hits", 0) >= 1),
             ("bot turned around fast after the hit (EVADE)", len(big_turns) >= 1),
             ("entry sightings saved to MongoDB", saved >= 1),
             ("+100 points classified as a headshot kill", d["headshot_kills_est"] == 1),
@@ -126,8 +126,8 @@ def main():
         for name, good in checks:
             print(("PASS " if good else "FAIL ") + name)
             ok &= good
-        print("diagnostics:", {k: d[k] for k in ("max_active_zombies", "avg_active_zombies", "damage_events",
-                                                 "unseen_hits", "recoil_comp_counts", "pitch_counts_end")})
+        print("diag keys:", sorted(d)); print("diagnostics:", {k: d.get(k) for k in ("max_active_zombies", "avg_active_zombies", "damage_events",
+                                                 "evades_from_unseen_hits", "tac_repositions", "headshot_kills_est")})
         # Entry points need 2+ sightings per bin; insert one more and check they load.
         from bot.awareness import EntryPoints
         db["entry_events"].insert_many([{"map": MAP, "bearing": e["bearing"], "kind": e["kind"]}

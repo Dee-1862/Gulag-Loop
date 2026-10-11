@@ -55,7 +55,7 @@ python -m tools.port_probe --map kino --gate1 --bot-seconds 60
 
 ## Game worker / controller (`bot/`): plugs into the evolution loop
 
-These implement the "Vision / controller teammate" row of [TEAMMATE_HANDOFF.md](TEAMMATE_HANDOFF.md). The worker consumes
+These implement the "Vision / controller teammate" row of `TEAMMATE_HANDOFF.md` (origin/jeffrey). The worker consumes
 `evolve_local.py jobs` output and writes the `ingest --results` format.
 
 ```bash
@@ -77,6 +77,46 @@ python -m bot.worker run --baseline 2 --results baseline.json    # without the o
 git worktree add D:/czb/evo origin/jeffrey          # the evolution code, untouched
 python -m bot.loop --evo-dir D:/czb/evo --state D:/czb/evo_state/kino.json --generations 3
 ```
+
+### Parallel games on one machine: tried, doesn't work with this port
+
+`bot/parallel.py`, `bot/jsinput.py` and `bot/screencast.py` drive tiled `--app` Chrome windows with in-page
+synthetic input: a fake pointer lock plus `mousemove`/`keydown` events. `input.js` never checks `isTrusted`, and
+this does turn the camera in a **focused** window. But:
+- **Covered windows don't render.** A screencast of a tile behind another window is solid black.
+- **Unfocused windows ignore input**, even with `hasFocus`/visibility spoofed and blur events swallowed.
+
+Real parallelism means **one worker per laptop** (`bot.worker` / `bot.loop` on each machine). The parallel code stays
+for reference.
+
+### Team dashboard (MongoDB)
+`bot/publish.py` writes exactly the documents the dashboard on `origin/jeffrey` (`dashboard/data.py`) reads, all scoped
+by `experiment_id` (default `rishit-<state file>`):
+- `experiments` (`design: 'bot'`), plus `playbooks`, `jobs`, `runs` and `llm_calls` mirrored from the evolution state
+- `dashboard_status`: the live **Worker viewport**. It's an annotated 640×360 HUD frame with fps, detections, action, points and elapsed time, refreshed every 2 s during a game.
+- **footage**: each episode's HUD video, re-encoded to 640 px faststart MP4, goes into the GridFS bucket `footage`,
+  with a `footage` doc per `job_id` (strategy, points, kills, fitness). The dashboard doesn't render videos yet;
+  the data is ready for a player panel.
+
+```bash
+python -m bot.loop ... --publish                      # live: viewport heartbeat + sync after every game
+python -m bot.publish --state D:/czb/evo_state/kino_v6.json   # backfill an experiment and its videos
+```
+Credentials come from `CZB_HOME/.env` (`MONGODB_URI`, `MONGODB_DB`), never from the repo. Tested against a local
+`mongod` with the unmodified dashboard: experiments, records, leaderboard, chart, worker card and `/api/frame`
+viewport all render.
+
+### Feedback quality (what the agents see)
+- **Exact scoring:** after GAME OVER, the post-game table (Points / Kills / Headshots) is read by OCR, and its points
+  replace the live-HUD estimate. `kills` and `headshots` are added to the diagnostics.
+- **Death cause:** `death_unseen_attacker` (no zombie on screen in the last 2 s) and
+  `s_since_last_zombie_seen_at_death` separate "killed from behind" from "lost the fight".
+  `first_zombie_seen_s` measures how fast the scan finds anything.
+- **Noise control:** every new child is evaluated twice (`--evals-per-child 2`), and the champion re-run stays.
+- **Generation 0 seeds:** `--seed-profiles` starts from baseline + Aggressive / Conservative / Sniper / Kiter
+  playstyles (`bot/parallel.py: PROFILES`).
+- **Latency compensation:** moves take ~110–130 ms to show up on screen. The controller subtracts in-flight moves
+  from the aim error and applies tracker ego-motion only when moves land (this was the aim "spazzing").
 
 Controller safety rules (not in the genome): pitch is dead-reckoned and capped at about ±160 screen px, and it levels back to the horizon while scanning, so one bad aim frame can't leave the bot staring at the ceiling. Sub-count mouse remainders carry over between frames. Game over must be read twice in a row.
 

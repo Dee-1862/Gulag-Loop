@@ -26,7 +26,7 @@ def fitness(r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--state", default="D:/czb/evo_state/kino_v4.json")
+    ap.add_argument("--state", default="D:/czb/evo_state/kino_v6.json")
     ap.add_argument("--out", default="D:/czb/renders/evo")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)

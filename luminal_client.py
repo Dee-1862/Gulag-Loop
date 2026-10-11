@@ -115,6 +115,14 @@ def mutate(parent, persona):
     return Strategy.model_validate(params)
 
 class LuminalClient:
+    def _progress(self, **payload):
+        callback = getattr(self, 'on_progress', None)
+        if callback:
+            try:
+                callback(**payload)
+            except Exception:
+                pass
+
     def generate_batch(self, parent, diagnostics, generation=1,
                        parent_id='baseline', fitness=None, history=None):
         """Generate four children concurrently, in stable persona order.
@@ -191,6 +199,7 @@ class LuminalClient:
         proposal = None
         for attempt in range(2):
             started = time.monotonic()
+            self._progress(persona=persona, generation=generation, state='running', attempt=attempt + 1)
             log = dict(generation=generation, persona=persona, model=self.model,
                        strategy_id=strategy_id, created_at=datetime.now(timezone.utc).isoformat(),
                        attempt=attempt + 1,
@@ -225,6 +234,8 @@ class LuminalClient:
             finally:
                 log['latency_ms'] = round((time.monotonic() - started) * 1000)
                 calls.append(log)
+                self._progress(persona=persona, generation=generation,
+                               state='complete' if log['ok'] else 'retrying', attempt=attempt + 1)
             if proposal:
                 break
         fallback = proposal is None
@@ -247,6 +258,8 @@ class LuminalClient:
                 fallback_source = 'local_mutation'
             else:
                 proposal.rationale = 'Cached earlier proposal reused after request failures: ' + proposal.rationale[:900]
+        self._progress(persona=persona, generation=generation, state='fallback' if fallback else 'complete',
+                       attempt=len(calls))
         return dict(
             strategy=dict(_id=strategy_id, generation=generation, persona=persona,
                           created_at=datetime.now(timezone.utc).isoformat(),
