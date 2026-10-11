@@ -1,0 +1,19 @@
+# torch/torchvision come from the CUDA index in setup.ps1; easyocr is installed --no-deps after this file.
+ultralytics==8.4.175
+dxcam
+mss
+opencv-python
+numpy
+pyyaml
+keyboard
+pydirectinput-rgx
+playwright
+imageio-ffmpeg
+scikit-image
+python-bidi
+shapely
+pyclipper
+ninja
+tensorrt-cu12>=10.9,<11
+onnx==1.19.1
+onnxslim

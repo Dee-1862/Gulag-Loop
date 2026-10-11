@@ -1,0 +1,19 @@
+# Shared config for the game laptop. Calibrate once per machine.
+capture:
+  window_title: "bo1z"          # substring of the Chrome window title; null = use region / full monitor
+  region: null                  # [left, top, right, bottom] in physical px; overrides window_title
+  target_fps: 60
+
+vision:
+  weights: models/zombies_v1.engine   # built by setup.ps1 for this GPU; falls back to models/zombies_v1.pt
+  conf: 0.3
+  max_aspect: 1.3               # wider-than-tall boxes = corpses, ignored
+  classes: null                 # null for the distilled model; [0] = COCO person for yolo11n
+  imgsz: 640
+  min_box_h_frac: 0.03          # drop tiny boxes (far-away noise)
+  # Regions blacked out before detection, as frame fractions [x1, y1, x2, y2].
+  # Tune with vision.run (press m): the gun/hands are bottom-center-right, HUD is in the corners.
+  masks:
+    - [0.48, 0.60, 0.80, 1.00]  # own pistol + hand (port, starting weapon)
+    - [0.00, 0.85, 0.12, 1.00]  # round tally (bottom-left)
+    - [0.84, 0.76, 1.00, 1.00]  # points / ammo HUD (bottom-right)
