@@ -1,4 +1,4 @@
-# Install torch first from the CUDA index (see README in the plan):
+# Vision + game worker. Install CUDA torch first:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ultralytics==8.4.175
 dxcam
@@ -8,6 +8,8 @@ numpy
 pyyaml
 keyboard
 pydirectinput-rgx
+playwright
+easyocr
 # MongoDB memory layer
 pymongo[srv]>=4.10
 python-dotenv>=1.0

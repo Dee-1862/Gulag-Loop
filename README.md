@@ -18,9 +18,9 @@ Built at c0mpiled-15, Penn State, October 11, 2026. Game: the Black Ops 1 Zombie
 flowchart LR
   subgraph LAPTOP["Game laptop · on-device"]
     GAME["Chrome: vel.gg/bo1z"] -->|frames| VIS["vision/pipeline.py<br/>YOLO + tracker"]
-    VIS -->|aim error, telemetry| CTRL["controller.py<br/>mouse + keys ⚠ not built"]
+    VIS -->|aim error, telemetry| CTRL["bot/controller.py<br/>mouse + keys"]
     CTRL -->|pydirectinput| GAME
-    WORK["worker.py ⚠ not built"] --> CTRL
+    WORK["bot/worker.py"] --> CTRL
   end
   subgraph ATLAS["MongoDB Atlas"]
     JOBS[(jobs)]
@@ -48,15 +48,18 @@ flowchart LR
 | Vision: capture, detector, tracker, HUD | Rishit | `vision/`, `config.yaml` | Built. Distilled model reaches mAP50 0.58 against its teacher's labels; runs on Rishit's laptop (weights on `D:\czb`) |
 | Strategy schema + Luminal agents | Jeffrey | `strategy.py`, `luminal_client.py`, `generation.py`, `evolution.py` | Built. 14 unit tests pass; live calls return valid proposals |
 | MongoDB orchestration + memory | Deekshith | `mongo_orchestrator.py`, `common/`, `scripts/` | Built. 13 offline + 15 live end-to-end checks pass |
-| **Controller: mouse + keyboard** | — | `controller.py` | **Not built.** Gate 1 (do scripted mouse moves turn the in-game camera?) is untested |
-| **Worker: job → run → result** | — | `worker.py` | **Not built** |
-| Points OCR + death detection | — | — | **Not built** (plan §5.3) |
+| Browser game driver | Rishit | `bot/game.py`, `tools/port_probe.py` | Built. Isolated Chrome on the dGPU, load/start/restart, pointer lock. **Gate 1 passes** (scripted mouse turns the camera) |
+| Controller: mouse + keyboard | Rishit | `bot/controller.py` | Built. Executes all 12 strategy params, F8 abort, computes §5.4 diagnostics. **Gate 2 passes** (first autonomous kill on the port) |
+| Worker: job → run → result | Rishit | `bot/worker.py` | Built. Calibrates mouse sensitivity, runs 180 s episodes |
+| Points OCR + game-over detection | Rishit | `bot/hudread.py` | Built (easyocr on fixed 720p crops) |
 | Dashboard | — | — | **Not built** (data and queries exist: `leaderboard()`, `playbook_lineage()`) |
 
 ## Repository layout
 
 ```
 vision/                 on-device eyes (see MD files/VISION.md)
+bot/                    browser game driver, controller (mouse + keys), HUD OCR, worker
+tools/port_probe.py     Gate 1 / Gate 2 test on the browser port
 config.yaml             capture window, model path, masks, calibrated per machine
 strategy.py             the 12-parameter strategy schema shared with the controller
 luminal_client.py       4 persona agents, validation, retries, fallbacks
@@ -132,7 +135,7 @@ All run results in these tests are synthetic; they prove the plumbing, not gamep
 ## Limitations
 
 - The detector was trained on footage of the original game, not the browser port, and on its teacher's labels rather than ground truth.
-- Mouse control of the browser game (Gate 1) has not been tested yet.
+- On the port the detector sees zombies in only ~10% of frames so far; episodes save raw port frames for retraining.
 - No gameplay improvement has been measured yet; all test runs are synthetic.
 - Cluster runs MongoDB 8.0 (Atlas free tier); we make no MongoDB 9.0 performance claims.
 - The game is an unofficial fan port; we link to it and include none of its files.
