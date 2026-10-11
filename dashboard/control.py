@@ -80,7 +80,9 @@ class WorkerControl:
         generations = max(1, min(int(generations), 20))
         with self.lock:
             if self.running():
-                raise RuntimeError(f"A game worker is already running ({self.experiment})")
+                own = self.proc is not None and self.proc.poll() is None
+                exp = self.experiment if own else next((e for _, e in worker_processes()), None)
+                raise RuntimeError(f"The bot is already running on {exp or 'another experiment'}. Stop it first.")
             sys.path.insert(0, str(ROOT))
             from mongo_orchestrator import MongoOrchestrator
             orch = MongoOrchestrator(experiment)
