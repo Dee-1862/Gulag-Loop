@@ -207,6 +207,8 @@ def main():
     ap.add_argument("--worker", default=socket.gethostname())
     ap.add_argument("--weights", default=None, help="detector weights; default: config.yaml, else model/zombies_v1.*")
     ap.add_argument("--live-view", action="store_true", help="show the HUD (red overlays + 360 radar) in a window")
+    ap.add_argument("--slot", type=int, default=None,
+                    help="with --experiment: play in a small tiled window with in-page input (no physical mouse)")
     ap.add_argument("--experiment", default=None, help="claim jobs from this MongoDB experiment (mongo_orchestrator)")
     ap.add_argument("--propose", action="store_true", help="with --experiment: ask Luminal when the queue is empty")
     ap.add_argument("--generations", type=int, default=8, help="with --experiment: stop after this generation")
@@ -309,7 +311,8 @@ def run_mongo(args):
             time.sleep(args.wait_s)
 
     runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
-                    weights=args.weights, db=orch.db, experiment_id=args.experiment, live_view=args.live_view)
+                    weights=args.weights, db=orch.db, experiment_id=args.experiment, live_view=args.live_view,
+                    slot=args.slot, input_mode="js" if args.slot is not None else "os")
     try:
         for i, job in enumerate(job_stream()):
             log(f"job {i + 1} {job['kind']} {job['strategy_id'][:8]} (MongoDB {args.experiment})")
