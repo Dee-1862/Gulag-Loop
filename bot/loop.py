@@ -14,6 +14,7 @@ import sys
 import time
 
 from bot.worker import Runner, log
+from bot.paths import p as _p
 
 
 def load_evo(evo_dir):
@@ -37,13 +38,17 @@ def make_client(evo_dir, offline):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evo-dir", default="D:/czb/evo")
-    ap.add_argument("--state", default="D:/czb/evo_state/kino.json")
+    ap.add_argument("--evo-dir", default=_p("evo"))
+    ap.add_argument("--state", default=_p("evo_state", "kino.json"))
     ap.add_argument("--generations", type=int, default=3, help="stop after this generation is fully evaluated")
     ap.add_argument("--map", default="kino")
     ap.add_argument("--max-s", type=float, default=180)
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--seed-profiles", action="store_true", help="gen 0 = baseline + Aggressive/Conservative/Sniper/Kiter")
+    ap.add_argument("--evals-per-child", type=int, default=2, help="evaluations queued per new child (noise control)")
+    ap.add_argument("--publish", action="store_true", help="mirror to the team MongoDB dashboard (CZB_HOME/.env)")
+    ap.add_argument("--experiment-id", default=None, help="dashboard experiment id (default: rishit-<state file name>)")
     args = ap.parse_args()
 
     evo = load_evo(args.evo_dir)
@@ -52,11 +57,22 @@ def main():
         state = evo.load_state(args.state)
         log(f"resumed {args.state}: generation {state['generation']}")
     else:
-        state = evo.initial_state()
+        if args.seed_profiles:
+            from bot.parallel import seeded_state
+            state = seeded_state(evo)
+        else:
+            state = evo.initial_state()
         evo.save_state(args.state, state, create=True)
-        log(f"new experiment {args.state}: 2 baseline jobs queued")
+        log(f"new experiment {args.state}: {len(state['jobs'])} jobs queued")
 
-    runner = Runner(args.map, args.config, max_s=args.max_s)
+    pub = None
+    if args.publish:
+        from bot.publish import Publisher
+        exp_id = args.experiment_id or "rishit-" + os.path.splitext(os.path.basename(args.state))[0]
+        pub = Publisher(exp_id, args.map)
+        pub.sync_state(state)
+        log(f"publishing to dashboard experiment '{exp_id}'")
+    runner = Runner(args.map, args.config, max_s=args.max_s, publisher=pub)
     try:
         while True:
             jobs = evo.pending_jobs(state)
@@ -70,6 +86,16 @@ def main():
                     break
                 state = evo.ingest_results(state, [r])
                 evo.save_state(args.state, state)
+                if pub is not None:
+                    try:
+                        pub.sync_state(state)
+                        d = r["diagnostics"]
+                        pub.upload_footage(r["job_id"], os.path.join(runner.out_dir or "", f"{r['job_id']}.mp4"),
+                                           meta={"strategy_id": r["strategy_id"], "generation": job.get("generation"),
+                                                 "points": r["points"], "survival_s": r["survival_s"],
+                                                 "kills": d.get("kills"), "fitness": r["points"] + 5 * r["survival_s"]})
+                    except Exception as e:
+                        log(f"dashboard publish failed (continuing): {type(e).__name__}: {str(e)[:120]}")
                 continue
             parents = evo.ranked_parents(state)
             log(f"generation {state['generation']} complete. top parents: " +
@@ -85,6 +111,15 @@ def main():
                     if child.get("persona") in ("Bold", "Tuner", "Defender", "Explorer") and not child.get("fallback"):
                         client.cache[child["persona"]] = Proposal(strategy=child["params"], rationale=child["rationale"])
             state = evo.advance(state, client)
+            if pub is not None:
+                try:
+                    pub.sync_state(state)
+                except Exception as e:
+                    log(f"dashboard publish failed (continuing): {type(e).__name__}")
+            for c in state["strategies"]:  # extra evaluations per child: one run is mostly noise
+                if c.get("generation") == state["generation"] and c.get("persona") != "Baseline":
+                    state["jobs"] += [evo.make_job(c["_id"], state["generation"], "child")
+                                      for _ in range(args.evals_per_child - 1)]
             evo.save_state(args.state, state)
             log(f"proposed generation {state['generation']} via {kind} in {time.time() - t:.1f}s")
             for c in state["strategies"]:

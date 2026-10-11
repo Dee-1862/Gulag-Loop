@@ -15,8 +15,9 @@ from collections import Counter, deque
 import cv2
 import numpy as np
 
-from bot.awareness import DamageSensor, EntryPoints, Heading, RecoilTracker, ZombieMemory, wrap180
+from bot.awareness import EntryPoints, Heading, ZombieMemory, wrap180
 from bot.scoring import classify_delta, in_head_zone, summarize as summarize_shots
+from bot.tactics import Tactics
 
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
                 burst_ms=120, retreat_box_h=300, strafe_mode="none", strafe_period_s=2.0,
@@ -25,6 +26,20 @@ BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15,
 BOUNDS = {"det_conf": (0.15, 0.70), "aim_gain": (0.1, 2.0), "aim_max_step": (5, 200), "aim_y_offset": (0.0, 0.5),
           "fire_radius_px": (5, 80), "burst_ms": (30, 400), "retreat_box_h": (50, 500),
           "strafe_period_s": (0.5, 5.0), "reload_when_clear_at": (0, 8), "scan_turn_px": (0, 300)}
+
+
+def damage_score(frame):
+    """Red tint at the screen edges (BO1 shows blood/red when hit; the whole screen goes red near death).
+    ~1 normally, ~33 when badly hurt. HUD corners with red art are excluded."""
+    im = cv2.resize(frame, (320, 180), interpolation=cv2.INTER_AREA).astype(np.float32)
+    red = np.clip(im[..., 2] - (im[..., 1] + im[..., 0]) / 2, 0, None)
+    m = np.zeros(red.shape, bool)
+    bw = 22
+    m[:bw] = m[-bw:] = True
+    m[:, :bw] = m[:, -bw:] = True
+    m[135:, 200:] = False  # points/ammo HUD blood splat
+    m[150:, :40] = False   # round tally
+    return float(red[m].mean())
 
 
 def clamp_params(p):
@@ -93,6 +108,9 @@ class Keys:
     def press(self, key):
         self.pdi.press(key)
 
+    def flush(self):
+        pass  # OS input is sent immediately
+
     def release_all(self):
         for k in list(self.held):
             self.pdi.keyUp(k)
@@ -101,9 +119,9 @@ class Keys:
 
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
-                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0,
-                map_name="kino", db=None, experiment_id=None, job_id=None, live_view=False,
-                on_progress=None):
+                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0, latency_s=0.11,
+                publisher=None, job_id=None, on_progress=None, map_name="kino", db=None, experiment_id=None,
+                live_view=False):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -111,7 +129,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     from vision.run import Recorder
 
     S = clamp_params(params)
-    keys = Keys()
+    keys = game.keys() if hasattr(game, "keys") else Keys()
+    # Moves reach the screen ~latency_s later (input -> game render -> capture). Without accounting for that,
+    # several corrections stack up before the first one is visible: overshoot, oscillation, lost track ids.
+    inflight = deque()  # (t_sent, counts_x, counts_y)
     aborted = {"v": False}
     hk = keyboard.add_hotkey(abort_key, lambda: aborted.__setitem__("v", True))
     own_cap = cap is None
@@ -141,30 +162,40 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     go_hits = 0
     pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
     last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
+    first_seen_s = None
+    # damage reaction
+    dmg_base = 1.0                   # running baseline of the red score
+    dmg_frames = dmg_events = evades = 0
+    hurt_until = 0.0                 # react while recently hit
+    evade_left = 0.0                 # mouse counts of emergency turn still to do
+    evade_dir = 1
+    react_times = []                 # seconds from hit (no target) to having a target again
+    hit_unseen_t = None
+    yaw180 = 2560 * counts_per_px    # ~1280 px is ~90 deg of yaw, so 180 deg ~ 2560 px
+    next_drift = time.time() + 3.0
+    last_visible_t = -1e9  # any confirmed zombie on screen (not just the target)
     sweep_t0, sweep_dir = time.time(), 1
     pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
-    shot_tally = Counter()      # hits and kill types estimated from points deltas (bot/scoring.py)
-    head_fires = 0              # fire events with the crosshair on the target's head zone
-    # --- awareness (bot/awareness.py): heading, zombie memory, damage, entry points, recoil ---
-    heading = Heading(counts_per_px)
-    memory = ZombieMemory()
-    damage = DamageSensor()
+    tactics = Tactics()  # rule-based target choice + movement (bot/tactics.py)
+    shot_tally = Counter()  # hits and kill types from points deltas (bot/scoring.py)
+    head_fires = 0
+    heading, memory = Heading(counts_per_px), ZombieMemory()  # for the 360 radar
     entries = EntryPoints(map_name, db)
     try:
         entries.load()
-    except Exception as e:  # MongoDB unreachable: play without entry points
-        log(f"[ctl] entry points not loaded ({type(e).__name__})")
-    if entries.points:
-        log(f"[ctl] entry points (bearing deg, sightings): {[(round(b), c) for b, c in entries.points]}")
-    recoil = RecoilTracker(counts_per_px)
-    turn_remaining = 0.0
-    evade_until = 0.0
-    unseen_hits = evade_turns = 0
+    except Exception:
+        pass
     active = 0
+    t_progress = 0.0
+
+    def radar_now():
+        return {"active": active,
+                "zombies": [{"rel_deg": wrap180(v["bearing"] - heading.yaw), "h_frac": v["h"],
+                             "visible": now - v["last"] < 0.2, "target": False} for v in memory.items.values()],
+                "entries": [wrap180(b - heading.yaw) for b, _ in entries.points]}
 
     t0 = time.time()
-    t_hud = t_frame_save = 0.0
-    t_progress = 0.0
+    t_hud = t_frame_save = t_pub = 0.0
     frame = None
     try:
         while True:
@@ -192,6 +223,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         points0 = p
                     if points is not None and p > points:
                         hits_proxy += 1
+                        tactics.on_points(p)
                         shot_tally.update(classify_delta(p - points))
                     points = p
                 if int(el) % 2 == 0:
@@ -204,38 +236,56 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         break
                 t_hud = now
 
-            sx, sy = keys.take_sent()
-            heading.on_move(sx, sy)  # counts actually sent since the last frame
+            landed_x = landed_y = 0
+            while inflight and now - inflight[0][0] >= latency_s:
+                _, cx_, cy_ = inflight.popleft()
+                landed_x += cx_
+                landed_y += cy_
+            pend_x = sum(m[1] for m in inflight) / counts_per_px  # screen px still to arrive
+            pend_y = sum(m[2] for m in inflight) / counts_per_px
             obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame,
-                          ego=(-sx / counts_per_px, -sy / counts_per_px))
+                          ego=(-landed_x / counts_per_px, -landed_y / counts_per_px))
             n += 1
             det_sum += obs.telemetry["n_boxes"]
             tgt = obs.target
             if tgt is not None and (tgt.hits < 3 or tgt.missed > 2):
                 tgt = None  # unconfirmed or long-gone: real zombies persist across frames, false positives flicker
+            tac = tactics.update(obs, now, W, H, S, points)
+            if tac.target is not None:  # highest threat across all confirmed zombies, chest aim when close
+                tgt = tac.target
+                obs.err_x, obs.err_y = tac.err_x, tac.err_y
+            confirmed = [t for t in obs.tracks if t.hits >= 3 and t.missed <= 2]
+            active = memory.update(confirmed, heading, now)
+            for tid_ in memory.new_ids:
+                if memory.items[tid_]["h"] < 0.3:  # first seen far away = an entry point
+                    entries.record(memory.items[tid_]["bearing"], "first_seen", el)
             action = "SCAN"
             keys.tick(now)
 
-            # awareness: count confirmed zombies (on screen or recently seen), learn entry points, react to hits
-            confirmed = [tr for tr in obs.tracks if getattr(tr, "hits", 3) >= 3 and getattr(tr, "missed", 0) <= 2]
-            visible_ids = {tr.id for tr in confirmed}
-            active = memory.update(confirmed, heading, now)
-            for tid in memory.new_ids:
-                it = memory.items[tid]
-                if it["h"] < 0.3:  # first seen far away = coming in through an entry point
-                    entries.record(it["bearing"], "first_seen", el)
-            if damage.update(frame, now) and not confirmed:
-                # hit by something we cannot see: it is behind us. Turn around and back off.
-                unseen_hits += 1
-                evade_turns += 1
-                entries.record(heading.yaw + 180.0, "unseen_hit", el)
-                turn_remaining = 180.0 / heading.deg_per_count * (1 if evade_turns % 2 else -1)
-                evade_until = now + 0.6
-            if tgt is not None:
-                recoil.observe(now, tgt.id, obs.err_y)
-
+            dscore = damage_score(frame)
+            hit = dscore > max(6.0, 3.0 * dmg_base)
+            if not hit:
+                dmg_base = 0.98 * dmg_base + 0.02 * dscore
+            if hit:
+                dmg_frames += 1
+                if now > hurt_until:  # new hit event
+                    dmg_events += 1
+                    if tgt is None:
+                        evades += 1
+                        evade_left = yaw180
+                        # a zombie seen recently on one side is the likely attacker; else turn around
+                        evade_dir = last_seen_dir if now - last_seen_t < 3.0 else 1
+                        hit_unseen_t = now
+                hurt_until = now + 1.2
+            if tgt is not None and hit_unseen_t is not None:
+                react_times.append(now - hit_unseen_t)
+                hit_unseen_t = None
             if obs.nearest_h_frac > 0.6:
                 close_calls += 1
+            if any(t.hits >= 3 and t.missed == 0 for t in obs.tracks):
+                last_visible_t = now
+                if first_seen_s is None:
+                    first_seen_s = round(el, 1)
 
             if tgt is not None:
                 last_seen_t = now
@@ -249,16 +299,18 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 prev_err_sign, prev_tid = sign, tgt.id
                 if acquiring is None or acquiring[0] != tgt.id:
                     acquiring = (tgt.id, n)
+                # error the camera will still have once in-flight moves land
+                ex, ey = obs.err_x - pend_x, obs.err_y - pend_y
                 k = S["aim_gain"] * counts_per_px
                 step = S["aim_max_step"]
-                mx = max(-step, min(step, obs.err_x * k))
-                my = max(-step, min(step, obs.err_y * k))
+                mx = max(-step, min(step, ex * k))
+                my = max(-step, min(step, ey * k))
                 my = max(-pitch_cap - pitch, min(pitch_cap - pitch, my))  # never stare at the ceiling/floor
                 pitch += keys.move(mx, my)
                 b = tgt.box
                 sx, sy = 0.15 * b.w, 0.15 * b.h  # crosshair inside the (shrunk) body box = any shot hits
                 on_body = (b.x1 + sx < W / 2 < b.x2 - sx) and (b.y1 + sy < H / 2 < b.y2 - sy)
-                if err < S["fire_radius_px"] or on_body:
+                if math.hypot(ex, ey) < S["fire_radius_px"] or on_body:
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target
@@ -268,63 +320,65 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                             last_reload = now
                     elif keys.fire(S["burst_ms"], now):
                         fires += 1
+                        tactics.on_fire(now, points)
                         if in_head_zone(tgt.box, W / 2, H / 2):
                             head_fires += 1
-                        recoil.on_fire(now, tgt.id, obs.err_y)
-                        comp = recoil.comp_counts()
-                        if comp:
-                            pitch += keys.move(0, comp)  # pull down against the learned recoil kick
                     action = "FIRE"
                 else:
                     action = "ENGAGE"
-                retreat = tgt.box.h > S["retreat_box_h"]
+                evade_left = 0.0  # a target is in view: stop any emergency turn
+                hurt = now < hurt_until
+                retreat = tgt.box.h > S["retreat_box_h"] or hurt
+                keys.hold("w", False)
                 keys.hold("s", retreat)
                 if retreat:
                     retreat_frames += 1
                     action = "RETREAT"
                 mode = S["strafe_mode"]
+                if hurt and mode == "none":
+                    mode = "alternate"  # being hit while fighting: don't stand still
                 if mode == "alternate":
                     mode = "left" if int(el / S["strafe_period_s"]) % 2 == 0 else "right"
                 keys.hold("a", mode == "left")
                 keys.hold("d", mode == "right")
+                if tac.label:  # tactics override: REPOSITION (blocked shot), KITE (close), SWARMED (3+ close)
+                    for k_ in ("w", "s", "a", "d"):
+                        keys.hold(k_, tac.keys[k_])
+                    if tac.keys["s"] and not retreat:
+                        retreat_frames += 1
+                    action = tac.label
             else:
                 no_target += 1
                 prev_err_sign = prev_tid = None
                 acquiring = None
-                for k_ in ("s", "a", "d"):
-                    keys.hold(k_, False)
+                keys.hold("s", False)
+                drifting = next_drift < now < next_drift + 0.4
+                drift_key = "a" if int(next_drift) % 2 else "d"
+                keys.hold("a", drifting and drift_key == "a")
+                keys.hold("d", drifting and drift_key == "d")
+                if now >= next_drift + 0.4:
+                    next_drift = now + 3.0  # idle drift: a 0.4 s side-step every 3 s so the bot doesn't plant
+                if evade_left > 0:  # hit by something we can't see: whip around and move away from it
+                    stepc = min(250.0, evade_left)
+                    keys.move(evade_dir * stepc, 0)
+                    evade_left -= stepc
+                    keys.hold("w", True)
+                    action = "EVADE"
+                else:
+                    keys.hold("w", now < hurt_until)  # keep moving while still being hit
                 dt = 1 / max(vp.fps, 10)
                 level = -0.25 * pitch if abs(pitch) > 2 else 0.0  # ease back to the horizon while scanning
-                step = max(S["aim_max_step"], 40)
-
-                def clampc(c):
-                    return max(-step, min(step, c))
-                behind = memory.offscreen(now, visible_ids)
-                watch = entries.next_watch(heading, now)
-                if turn_remaining:  # hit from behind: turn around fast
-                    d = max(-120.0, min(120.0, turn_remaining))
-                    pitch += keys.move(d, level)
-                    turn_remaining = 0.0 if abs(turn_remaining - d) < 1 else turn_remaining - d
-                    action = "EVADE"
+                if action == "EVADE":
+                    turn = 0.0  # the emergency turn above already moved the camera
                 elif now - last_seen_t < 1.5:
                     # just lost it: snap toward where it left the screen (it usually walked off the edge)
                     turn = last_seen_dir * max(2 * S["scan_turn_px"], 300)
-                    pitch += keys.move(turn * dt * counts_per_px, level)
-                elif behind:  # a zombie seen in the last 3 s is off screen: face the closest one
-                    pitch += keys.move(clampc(heading.counts_to(behind[0]["bearing"])), level)
-                    action = "TRACK"
-                elif watch is not None:  # watch the learned entry points in turn
-                    c = heading.counts_to(watch)
-                    pitch += keys.move(clampc(c * 0.5) if abs(c) > 2 else 0, level)
-                    action = "WATCH"
                 else:
                     # sweep: 2 s one way, 1 s back -> re-checks the front arc while drifting a full circle
                     if now - sweep_t0 > (2.0 if sweep_dir > 0 else 1.0):
                         sweep_dir, sweep_t0 = -sweep_dir, now
                     turn = sweep_dir * S["scan_turn_px"]
-                    pitch += keys.move(turn * dt * counts_per_px, level)
-                if now < evade_until:
-                    keys.hold("s", True)
+                pitch += keys.move(turn * dt * counts_per_px, level)
                 if (ammo and ammo[1] > 0 and now - last_reload > 3 and
                         (ammo[0] == 0 or (S["reload_when_clear_at"] and ammo[0] <= S["reload_when_clear_at"]))):
                     keys.press("r")
@@ -343,31 +397,35 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 still_since = None
             prev_small = small
 
+            sx, sy = keys.take_sent()
+            heading.on_move(sx, sy)  # dead-reckoned yaw for the radar
+            if sx or sy:
+                inflight.append((now, sx, sy))
+            keys.flush()
             last5.append((now, obs.telemetry["n_tracks"], obs.nearest_h_frac, action, ammo[0] if ammo else None))
-            if on_progress and now - t_progress >= 2.0:  # dashboard heartbeat (Jeffrey)
-                try:
-                    on_progress(frame=vp.hud_frame(info={'action': action, 'points': points or 0}),
-                                fps=round(n / max(el, 0.001), 1), detections=len(confirmed), action=action,
-                                points=int(max(0, (points or 0) - (points0 or 0))), elapsed_s=round(el, 1),
-                                active_zombies=active)
-                except Exception:
-                    pass  # Observability is best effort; the controller keeps running.
-                t_progress = now
             while last5 and now - last5[0][0] > 5:
                 last5.popleft()
 
+            if on_progress and now - t_progress >= 2.0:  # dashboard heartbeat for the MongoDB job mode (Jeffrey)
+                t_progress = now
+                try:
+                    on_progress(frame=vp.hud_frame(info={"action": action}), fps=round(vp.fps, 1),
+                                detections=obs.telemetry["n_tracks"], action=action, active_zombies=active,
+                                points=(points - points0) if (points is not None and points0 is not None) else 0,
+                                elapsed_s=round(el, 1))
+                except Exception:
+                    pass  # observability is best effort
+            if publisher is not None and now - t_pub > 2.0:  # live "Worker viewport" on the team dashboard
+                t_pub = now
+                publisher.heartbeat(job_id, vp.hud_frame(info={"action": action}), fps=round(vp.fps, 1),
+                                    detections=obs.telemetry["n_tracks"], action=action,
+                                    points=(points - points0) if (points is not None and points0 is not None) else 0,
+                                    elapsed_s=round(el, 1), force=True)
             if (rec or live_view) and n % 2 == 0:
-                radar = {"active": active,
-                         "zombies": [{"rel_deg": wrap180(v["bearing"] - heading.yaw), "h_frac": v["h"],
-                                      "visible": tid in visible_ids, "target": tgt is not None and tid == tgt.id}
-                                     for tid, v in memory.items.items()],
-                         "entries": [wrap180(b - heading.yaw) for b, _ in entries.points]}
-                img = vp.hud_frame(info={"action": "HIT - TURNING" if damage.recently_hit(now, 0.6) else action,
-                                         "points": points if points is not None else "-",
-                                         "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
-                                                     f"{S['target_rule']}"},
-                                   fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H,
-                                   radar=radar)
+                img = vp.hud_frame(radar=radar_now(), info={"action": action, "points": points if points is not None else "-",
+                                             "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
+                                                         f"{S['target_rule']}"},
+                                       fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H)
                 if rec:
                     rec.write(img)
                 if live_view:
@@ -380,15 +438,32 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     finally:
         keys.release_all()
         keyboard.remove_hotkey(hk)
-        if own_cap:
+        if own_cap and not game_over:
             cap.close()
         if rec:
             rec.close()
 
     survival = min(max_s, time.time() - t0)
+    t_end = time.time()
+    board = None
+    if game_over:  # exact numbers from the post-game table (appears a few seconds after GAME OVER)
+        t_sb = time.time()
+        while time.time() - t_sb < 15 and board is None:
+            try:
+                board = hud.scoreboard(cv2.resize(cap.grab(), (1280, 720), interpolation=cv2.INTER_AREA))
+            except Exception:
+                board = None
+            if board is None:
+                time.sleep(0.7)
+        if board:
+            log(f"[ctl] scoreboard: {board}")
+        if own_cap:
+            cap.close()
     gained = (points - points0) if (points is not None and points0 is not None) else 0
+    if board:  # trust the scoreboard over live HUD OCR (Kino starts with 500)
+        gained = max(0, board["points"] - (points0 if points0 is not None else 500))
     cap_pts = 130 * fires  # +10 per hit, at most +130 for a kill; no shots means no points
-    if gained > cap_pts:
+    if gained > cap_pts and not board:
         log(f"[ctl] OCR points gain {gained} exceeds plausible {cap_pts} for {fires} shots; capping")
         gained = cap_pts
     acts = [a[3] for a in last5]
@@ -409,25 +484,28 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "det_count_avg": round(det_sum / n, 2) if n else 0.0,
         "stuck_events": stuck_events,
         "death_time_s": round(survival, 1) if game_over else None,
+        "kills": board["kills"] if board else None,
+        "headshots": board["headshots"] if board else None,
+        "first_zombie_seen_s": first_seen_s,
+        # died with no zombie on screen for the last 2 s = attacked from behind / off-screen
+        "death_unseen_attacker": (t_end - last_visible_t > 2.0) if game_over else None,
+        "s_since_last_zombie_seen_at_death": round(min(t_end - last_visible_t, 999), 1) if game_over else None,
         "last_5s_summary": summary,
+        "damage_frames": dmg_frames,
+        "damage_events": dmg_events,
+        **{f"tac_{k}": v for k, v in tactics.stats.items()},
+        **summarize_shots(shot_tally, head_fires, fires),
+        "max_active_zombies": memory.max_active,
+        "entry_points_known": len(entries.points),
+        "evades_from_unseen_hits": evades,
+        "avg_s_to_face_attacker": round(float(np.mean(react_times)), 2) if react_times else None,
         "loop_fps": round(n / max(survival, 1e-6), 1),
         "pointer_lock_losses": lock_losses,
-        **summarize_shots(shot_tally, head_fires, fires),
-        "damage_events": damage.events,
-        "unseen_hits": unseen_hits,
-        "max_active_zombies": memory.max_active,
-        "avg_active_zombies": round(memory.avg_active, 2),
-        "entry_points_known": len(entries.points),
-        "recoil_jump_px": round(recoil.jump_ema, 1) if recoil.jump_ema is not None else None,
-        "recoil_comp_counts": recoil.comp_counts(),
-        "pitch_counts_end": round(pitch, 1),
     }
-    try:
-        saved = entries.save(experiment_id, job_id)
-        if saved:
-            log(f"[ctl] {saved} entry sightings saved to MongoDB")
-    except Exception as e:
-        log(f"[ctl] entry sightings not saved ({type(e).__name__})")
     diagnostics = {k: v for k, v in diagnostics.items() if v is not None}
+    try:
+        entries.save(experiment_id, job_id)
+    except Exception:
+        pass
     return {"points": int(max(0, gained)), "survival_s": round(survival, 1), "game_over": game_over,
             "aborted": aborted["v"], "points_start": points0, "points_end": points, "diagnostics": diagnostics}
