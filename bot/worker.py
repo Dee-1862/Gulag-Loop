@@ -212,6 +212,8 @@ def main():
     ap.add_argument("--live-view", action="store_true", help="show the HUD (red overlays + 360 radar) in a window")
     ap.add_argument("--stream", action="store_true",
                     help="serve the live HUD at http://127.0.0.1:8766/stream.mjpg for the dashboard viewport")
+    ap.add_argument("--headless", action="store_true",
+                    help="with --slot: run the game with no window at all (watch it in the dashboard)")
     ap.add_argument("--offscreen", action="store_true",
                     help="with --slot: open the game window off-screen (watch it in the dashboard instead)")
     ap.add_argument("--slot", type=int, default=None,
@@ -244,6 +246,8 @@ def main():
         log(f"live stream for the dashboard: {livestream.start()}")
     if args.offscreen:
         os.environ["BOT_OFFSCREEN"] = "1"
+    if args.headless:
+        os.environ["BOT_HEADLESS"] = "1"
     if args.experiment:
         run_mongo(args)
         return

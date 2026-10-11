@@ -27,15 +27,19 @@ function clearFrame(){if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}$('
 function cancelSnapshot(){requestVersion++;snapshotRequest?.abort();snapshotRequest=null;loading=false;$('refresh').disabled=false;}
 function cancelListing(){listVersion++;listRequest?.abort();listRequest=null;listing=false;}
 function currentRequest(version,query){return version===requestVersion&&query.toString()===params().toString();}
+let rawView=false;
 async function updateFrame(data,query,version,signal){
+ if(!data.workers?.some(w=>w.state==='running'&&w.stream))$('stream-view').hidden=true;
  const active=data.workers?.find(w=>w.state==='running');
  // A worker started with --stream (bot/livestream.py) advertises a local MJPEG URL in its heartbeat:
  // show the HUD live (~10-15 fps) instead of the 2 s snapshots.
  const stream=data.mode!=='demo'&&typeof active?.stream==='string'&&/^http:\/\/127\.0\.0\.1:\d+\//.test(active.stream)?active.stream:null;
  if(stream){
   if(blobURL){URL.revokeObjectURL(blobURL);blobURL=null;}
-  if($('frame').getAttribute('src')!==stream)$('frame').src=stream;
-  $('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='LIVE STREAM';return;
+  const want=stream+(rawView?'?view=raw':'');
+  if($('frame').getAttribute('src')!==want)$('frame').src=want;
+  $('stream-view').hidden=false;$('stream-view').textContent=rawView?'RAW':'HUD';
+  $('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent=rawView?'LIVE STREAM · RAW GAME':'LIVE STREAM · HUD';return;
  }
  if(data.mode==='demo'){clearFrame();$('frame').src='/demo-frame.jpg';$('frame').hidden=false;$('frame-empty').hidden=true;$('frame-label').textContent='SAMPLE CAPTURE';return;}
  $('frame-label').textContent='NO LIVE FRAME';
@@ -315,3 +319,4 @@ function renderRecordings(data,query){
 
 // Fullscreen game view: the whole viewport (stream + overlays) fills the screen; Esc exits.
 $('fullscreen')?.addEventListener('click',()=>{const v=$('viewport');if(document.fullscreenElement)document.exitFullscreen();else v?.requestFullscreen?.();});
+$('stream-view')?.addEventListener('click',()=>{rawView=!rawView;const f=$('frame'),s=f.getAttribute('src')||'';if(s.includes('/stream.mjpg')){f.src=s.split('?')[0]+(rawView?'?view=raw':'');}$('stream-view').textContent=rawView?'RAW':'HUD';$('frame-label').textContent=rawView?'LIVE STREAM · RAW GAME':'LIVE STREAM · HUD';});

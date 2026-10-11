@@ -66,6 +66,8 @@ class PortGame:
         self.map_id = map_id
         self.slot = slot
         self.input_mode = input_mode
+        # Headless (no window at all): only with in-page input + screencast, i.e. a slot. Watch it in the dashboard.
+        self.headless = slot is not None and bool(os.environ.get("BOT_HEADLESS"))
         from bot.paths import p as _p
         profile = profile or _p("chrome-profile")
         self.profile = profile if slot is None else f"{profile}-{slot}"
@@ -90,8 +92,12 @@ class PortGame:
                 "--autoplay-policy=no-user-gesture-required"]
             viewport = None
         kw = {"viewport": viewport} if viewport else {"no_viewport": True}  # no_viewport: window size is respected
+        if self.headless:  # no window to size: give the page a real 720p viewport to render into
+            kw = {"viewport": {"width": 1280, "height": 720}}
         self._ctx = self._pw.chromium.launch_persistent_context(
-            self.profile, channel="chrome", headless=False, args=args, ignore_default_args=["--enable-automation"], **kw)
+            self.profile, channel="chrome", headless=self.headless,
+            args=args + (["--use-angle=d3d11", "--enable-gpu"] if self.headless else []),
+            ignore_default_args=["--enable-automation"], **kw)
         self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         if self.input_mode == "js":
             from bot.jsinput import INIT_SCRIPT

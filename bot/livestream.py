@@ -17,7 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 
 _lock = threading.Condition()
-_jpeg = None
+_jpeg = None          # HUD view (red overlays, radar, action)
+_raw = None           # the plain game frame
 _seq = 0
 _t_last = 0.0
 _fps = 0.0
@@ -28,11 +29,17 @@ def active():
     return _server is not None
 
 
-def publish(img_bgr, max_w=960, quality=72):
-    """Encode and share one HUD frame. Cheap no-op when the stream isn't running."""
-    global _jpeg, _seq, _t_last, _fps
+def publish(img_bgr, max_w=960, quality=72, raw_bgr=None):
+    """Encode and share one HUD frame (and optionally the raw game frame). No-op when the stream isn't running."""
+    global _jpeg, _raw, _seq, _t_last, _fps
     if _server is None or img_bgr is None:
         return
+    if raw_bgr is not None:
+        rh, rw = raw_bgr.shape[:2]
+        small = cv2.resize(raw_bgr, (max_w, int(rh * max_w / rw)), interpolation=cv2.INTER_AREA) if rw > max_w else raw_bgr
+        ok_r, enc_r = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if ok_r:
+            _raw = enc_r.tobytes()
     h, w = img_bgr.shape[:2]
     if w > max_w:
         img_bgr = cv2.resize(img_bgr, (max_w, int(h * max_w / w)), interpolation=cv2.INTER_AREA)
@@ -76,13 +83,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._head("image/jpeg")
             self.wfile.write(data)
         elif path == "/stream.mjpg":
+            raw = "view=raw" in self.path  # ?view=raw: the plain game frame instead of the HUD view
             self._head("multipart/x-mixed-replace; boundary=frame")
             seen = -1
             try:
                 while True:
                     with _lock:
                         _lock.wait_for(lambda: _seq != seen, timeout=5.0)
-                        data, seen = _jpeg, _seq
+                        data, seen = (_raw if raw else _jpeg), _seq
                     if data is None:
                         continue
                     self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "

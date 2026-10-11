@@ -429,7 +429,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                                        fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H)
                 if rec:
                     rec.write(img)
-                livestream.publish(img)  # dashboard live view
+                livestream.publish(img, raw_bgr=frame)  # dashboard live view (HUD + raw)
                 if live_view:
                     cv2.imshow("ZOMBIE VISION (live)", img)
                     cv2.waitKey(1)
