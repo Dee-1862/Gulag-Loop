@@ -50,6 +50,8 @@ class Keys:
         self.pdi = pydirectinput
         self.held = set()
         self.mouse_down_until = 0.0
+        self.rx = self.ry = 0.0  # sub-count remainders, so slow scans and fine aim aren't truncated away
+        self.sent_x = self.sent_y = 0  # counts actually sent since the last frame (ego-motion for the tracker)
 
     def hold(self, key, on):
         if on and key not in self.held:
@@ -60,8 +62,21 @@ class Keys:
             self.held.discard(key)
 
     def move(self, dx, dy):
-        if dx or dy:
-            self.pdi.moveRel(int(dx), int(dy), relative=True, disable_mouse_acceleration=True)
+        self.rx += dx
+        self.ry += dy
+        ix, iy = int(self.rx), int(self.ry)
+        if ix or iy:
+            self.pdi.moveRel(ix, iy, relative=True, disable_mouse_acceleration=True)
+            self.rx -= ix
+            self.ry -= iy
+            self.sent_x += ix
+            self.sent_y += iy
+        return iy
+
+    def take_sent(self):
+        sx, sy = self.sent_x, self.sent_y
+        self.sent_x = self.sent_y = 0
+        return sx, sy
 
     def fire(self, ms, now):
         if now >= self.mouse_down_until:
@@ -96,28 +111,6 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
     S = clamp_params(params)
     keys = Keys()
-    # --- awareness: heading from the mouse counts we send, zombie memory, damage, entry points, recoil ---
-    heading = Heading(counts_per_px)
-    _raw_move = keys.move
-
-    def tracked_move(dx, dy):
-        _raw_move(dx, dy)
-        heading.on_move(dx, dy)
-    keys.move = tracked_move
-    memory = ZombieMemory()
-    damage = DamageSensor()
-    entries = EntryPoints(map_name, db)
-    try:
-        entries.load()
-    except Exception as e:  # MongoDB unreachable: play without entry points
-        log(f"[ctl] entry points not loaded ({type(e).__name__})")
-    if entries.points:
-        log(f"[ctl] entry points (bearing deg, sightings): {[(round(b), c) for b, c in entries.points]}")
-    recoil = RecoilTracker(counts_per_px)
-    turn_remaining = 0.0
-    evade_until = 0.0
-    unseen_hits = evade_turns = 0
-    active = 0
     aborted = {"v": False}
     hk = keyboard.add_hotkey(abort_key, lambda: aborted.__setitem__("v", True))
     own_cap = cap is None
@@ -135,8 +128,6 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     prev_err_sign = None
     prev_tid = None
     hits_proxy = 0
-    shot_tally = Counter()      # hits and kill types estimated from points deltas (bot/scoring.py)
-    head_fires = 0              # fire events with the crosshair on the target's head zone
     stuck_events = 0
     still_since = None
     prev_small = None
@@ -146,6 +137,29 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     last_reload = 0.0
     lock_losses = 0
     game_over = False
+    go_hits = 0
+    pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
+    last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
+    sweep_t0, sweep_dir = time.time(), 1
+    pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
+    shot_tally = Counter()      # hits and kill types estimated from points deltas (bot/scoring.py)
+    head_fires = 0              # fire events with the crosshair on the target's head zone
+    # --- awareness (bot/awareness.py): heading, zombie memory, damage, entry points, recoil ---
+    heading = Heading(counts_per_px)
+    memory = ZombieMemory()
+    damage = DamageSensor()
+    entries = EntryPoints(map_name, db)
+    try:
+        entries.load()
+    except Exception as e:  # MongoDB unreachable: play without entry points
+        log(f"[ctl] entry points not loaded ({type(e).__name__})")
+    if entries.points:
+        log(f"[ctl] entry points (bearing deg, sightings): {[(round(b), c) for b, c in entries.points]}")
+    recoil = RecoilTracker(counts_per_px)
+    turn_remaining = 0.0
+    evade_until = 0.0
+    unseen_hits = evade_turns = 0
+    active = 0
 
     t0 = time.time()
     t_hud = t_frame_save = 0.0
@@ -160,7 +174,9 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 keys.release_all()
                 lock_losses += 1
                 if not game.ensure_locked():
-                    log("[ctl] could not re-acquire pointer lock; ending episode")
+                    # the death screen releases the mouse; a lost lock that can't be re-acquired = dead
+                    game_over = True
+                    log(f"[ctl] pointer lock gone at {el:.1f}s (death screen); ending episode")
                     break
             raw = cap.grab()
             frame = cv2.resize(raw, (1280, 720), interpolation=cv2.INTER_AREA)
@@ -179,27 +195,34 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 if int(el) % 2 == 0:
                     a = hud.read_ammo(frame)
                     ammo = a if a else ammo
-                    if el > 5 and hud.game_over(frame):
+                    go_hits = go_hits + 1 if (el > 5 and hud.game_over(frame)) else 0
+                    if go_hits >= 2:  # two consecutive reads, 2 s apart
                         game_over = True
                         log(f"[ctl] game over at {el:.1f}s")
                         break
                 t_hud = now
 
-            obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame)
+            sx, sy = keys.take_sent()
+            heading.on_move(sx, sy)  # counts actually sent since the last frame
+            obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame,
+                          ego=(-sx / counts_per_px, -sy / counts_per_px))
             n += 1
             det_sum += obs.telemetry["n_boxes"]
             tgt = obs.target
+            if tgt is not None and (tgt.hits < 3 or tgt.missed > 2):
+                tgt = None  # unconfirmed or long-gone: real zombies persist across frames, false positives flicker
             action = "SCAN"
             keys.tick(now)
 
-            # awareness update
-            visible_ids = {t.id for t in obs.tracks}
-            active = memory.update(obs.tracks, heading, now)
+            # awareness: count confirmed zombies (on screen or recently seen), learn entry points, react to hits
+            confirmed = [tr for tr in obs.tracks if getattr(tr, "hits", 3) >= 3 and getattr(tr, "missed", 0) <= 2]
+            visible_ids = {tr.id for tr in confirmed}
+            active = memory.update(confirmed, heading, now)
             for tid in memory.new_ids:
                 it = memory.items[tid]
                 if it["h"] < 0.3:  # first seen far away = coming in through an entry point
                     entries.record(it["bearing"], "first_seen", el)
-            if damage.update(frame, now) and not obs.tracks:
+            if damage.update(frame, now) and not confirmed:
                 # hit by something we cannot see: it is behind us. Turn around and back off.
                 unseen_hits += 1
                 evade_turns += 1
@@ -213,6 +236,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 close_calls += 1
 
             if tgt is not None:
+                last_seen_t = now
+                last_seen_dir = 1 if obs.err_x >= 0 else -1
                 aim_frames += 1
                 err = math.hypot(obs.err_x, obs.err_y)
                 # overshoot: sign flip of horizontal error on the SAME target (tracker keeps ids stable)
@@ -224,19 +249,29 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                     acquiring = (tgt.id, n)
                 k = S["aim_gain"] * counts_per_px
                 step = S["aim_max_step"]
-                keys.move(max(-step, min(step, obs.err_x * k)), max(-step, min(step, obs.err_y * k)))
-                if err < S["fire_radius_px"]:
+                mx = max(-step, min(step, obs.err_x * k))
+                my = max(-step, min(step, obs.err_y * k))
+                my = max(-pitch_cap - pitch, min(pitch_cap - pitch, my))  # never stare at the ceiling/floor
+                pitch += keys.move(mx, my)
+                b = tgt.box
+                sx, sy = 0.15 * b.w, 0.15 * b.h  # crosshair inside the (shrunk) body box = any shot hits
+                on_body = (b.x1 + sx < W / 2 < b.x2 - sx) and (b.y1 + sy < H / 2 < b.y2 - sy)
+                if err < S["fire_radius_px"] or on_body:
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target
-                    if keys.fire(S["burst_ms"], now):
+                    if ammo and ammo[0] == 0 and ammo[1] > 0:
+                        if now - last_reload > 3:
+                            keys.press("r")
+                            last_reload = now
+                    elif keys.fire(S["burst_ms"], now):
                         fires += 1
                         if in_head_zone(tgt.box, W / 2, H / 2):
                             head_fires += 1
                         recoil.on_fire(now, tgt.id, obs.err_y)
                         comp = recoil.comp_counts()
                         if comp:
-                            keys.move(0, comp)  # pull down against the learned recoil kick
+                            pitch += keys.move(0, comp)  # pull down against the learned recoil kick
                     action = "FIRE"
                 else:
                     action = "ENGAGE"
@@ -257,32 +292,39 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 for k_ in ("s", "a", "d"):
                     keys.hold(k_, False)
                 dt = 1 / max(vp.fps, 10)
+                level = -0.25 * pitch if abs(pitch) > 2 else 0.0  # ease back to the horizon while scanning
                 step = max(S["aim_max_step"], 40)
 
                 def clampc(c):
                     return max(-step, min(step, c))
-                # keep the view level: zombies walk on the floor, not the ceiling
-                level = -clampc(heading.pitch_counts * 0.25) if abs(heading.pitch_counts) > 5 else 0
                 behind = memory.offscreen(now, visible_ids)
                 watch = entries.next_watch(heading, now)
-                if turn_remaining:
+                if turn_remaining:  # hit from behind: turn around fast
                     d = max(-120.0, min(120.0, turn_remaining))
-                    keys.move(d, level)
+                    pitch += keys.move(d, level)
                     turn_remaining = 0.0 if abs(turn_remaining - d) < 1 else turn_remaining - d
                     action = "EVADE"
-                elif behind:  # a zombie we saw is now off screen: face the closest one
-                    keys.move(clampc(heading.counts_to(behind[0]["bearing"])), level)
+                elif now - last_seen_t < 1.5:
+                    # just lost it: snap toward where it left the screen (it usually walked off the edge)
+                    turn = last_seen_dir * max(2 * S["scan_turn_px"], 300)
+                    pitch += keys.move(turn * dt * counts_per_px, level)
+                elif behind:  # a zombie seen in the last 3 s is off screen: face the closest one
+                    pitch += keys.move(clampc(heading.counts_to(behind[0]["bearing"])), level)
                     action = "TRACK"
                 elif watch is not None:  # watch the learned entry points in turn
                     c = heading.counts_to(watch)
-                    keys.move(clampc(c * 0.5) if abs(c) > 2 else 0, level)
+                    pitch += keys.move(clampc(c * 0.5) if abs(c) > 2 else 0, level)
                     action = "WATCH"
                 else:
-                    keys.move(S["scan_turn_px"] * dt * counts_per_px, level)
+                    # sweep: 2 s one way, 1 s back -> re-checks the front arc while drifting a full circle
+                    if now - sweep_t0 > (2.0 if sweep_dir > 0 else 1.0):
+                        sweep_dir, sweep_t0 = -sweep_dir, now
+                    turn = sweep_dir * S["scan_turn_px"]
+                    pitch += keys.move(turn * dt * counts_per_px, level)
                 if now < evade_until:
                     keys.hold("s", True)
-                if (S["reload_when_clear_at"] and ammo and ammo[0] < S["reload_when_clear_at"]
-                        and ammo[1] > 0 and now - last_reload > 3):
+                if (ammo and ammo[1] > 0 and now - last_reload > 3 and
+                        (ammo[0] == 0 or (S["reload_when_clear_at"] and ammo[0] <= S["reload_when_clear_at"]))):
                     keys.press("r")
                     last_reload = now
                     action = "RELOAD"
@@ -323,6 +365,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
     survival = min(max_s, time.time() - t0)
     gained = (points - points0) if (points is not None and points0 is not None) else 0
+    cap_pts = 130 * fires  # +10 per hit, at most +130 for a kill; no shots means no points
+    if gained > cap_pts:
+        log(f"[ctl] OCR points gain {gained} exceeds plausible {cap_pts} for {fires} shots; capping")
+        gained = cap_pts
     acts = [a[3] for a in last5]
     summary = (f"last 5s: avg {np.mean([a[1] for a in last5]) if last5 else 0:.1f} zombies visible, "
                f"nearest box {max([a[2] for a in last5], default=0):.2f} of screen height, "
@@ -334,6 +380,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "shots_without_target": 0,  # the controller only fires with a locked target
         "shots_fired": fires,
         "hits_proxy": hits_proxy,
+        "hit_rate": round(hits_proxy / fires, 3) if fires else None,  # point-gain events per shot fired
         "close_calls": close_calls,
         "retreat_frames": retreat_frames,
         "time_no_target_pct": round(100.0 * no_target / n, 1) if n else 100.0,
@@ -351,7 +398,7 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "entry_points_known": len(entries.points),
         "recoil_jump_px": round(recoil.jump_ema, 1) if recoil.jump_ema is not None else None,
         "recoil_comp_counts": recoil.comp_counts(),
-        "pitch_drift_counts": heading.pitch_counts,
+        "pitch_counts_end": round(pitch, 1),
     }
     try:
         saved = entries.save(experiment_id, job_id)

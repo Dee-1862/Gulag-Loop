@@ -69,6 +69,73 @@ def load_calib():
     return json.load(open(CALIB)) if os.path.exists(CALIB) else {}
 
 
+class Runner:
+    """One open game session that evaluates jobs back to back (used by worker `run` and bot.loop)."""
+
+    def __init__(self, map_id="kino", config="config.yaml", out_dir=None,
+                 save_frames=None, frame_every=1.0, max_s=180.0, worker=None,
+                 weights=None, db=None, experiment_id=None):
+        import yaml
+        from vision.capture import Capture
+        from vision.pipeline import VisionPipeline
+        from bot.hudread import HudReader
+        out_dir = out_dir or data_path("episodes", "")
+        save_frames = data_path("port_frames", "") if save_frames is None else save_frames
+        self.db, self.experiment_id = db, experiment_id  # entry points are learned per map in MongoDB
+        # Load the detector and OCR BEFORE starting the game: they take ~1 min, and an idle player
+        # in round 1 gets killed before the first episode begins.
+        weights = resolve_weights(weights or yaml.safe_load(open(config))["vision"]["weights"])
+        log(f"detector weights: {weights}")
+        self.vp = VisionPipeline.from_config(config, live=False, weights=weights)
+        self.hud = HudReader()
+        log("detector and HUD reader loaded")
+        self.map_id, self.out_dir, self.max_s = map_id, out_dir, max_s
+        self.save_frames, self.frame_every = save_frames, frame_every
+        self.worker = worker or socket.gethostname()
+        self.cpp = load_calib().get("counts_per_px")
+        if self.cpp is None:
+            self.cpp = 0.15
+            log("WARNING: no calibration.json; using counts_per_px=0.15. Run `python -m bot.worker calibrate`.")
+        os.makedirs(out_dir, exist_ok=True)
+        self.game = PortGame(map_id, log=log).open()
+        log("gpu:", self.game.gpu())
+        self.game.start()
+        # Geometric viewport estimate on purpose: template alignment succeeds only sometimes, and a
+        # session-dependent 25 px offset would make episodes incomparable and move the HUD OCR crops.
+        self._Capture = Capture
+        self.cap = Capture(self.game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
+        log(f"capture backend: {self.cap.backend} region {self.game.canvas_region()}, counts_per_px={self.cpp}")
+        self.fresh = True
+
+    def run(self, job):
+        """Play one episode for a job. Returns a result dict in the ingest format, or None if aborted (F8)."""
+        if not self.fresh:
+            self.game.start()  # reload = fresh game; assets come from cache
+        self.fresh = False
+        self.vp.tracker.__init__()  # fresh track ids per episode
+        self.hud.points_hist.clear()
+        self.hud.points = None
+        res = run_episode(self.game, self.vp, self.hud, job["params"], max_s=self.max_s, counts_per_px=self.cpp,
+                          record_path=os.path.join(self.out_dir, f"{job['job_id']}.mp4"),
+                          save_frames_dir=os.path.join(self.save_frames, self.map_id) if self.save_frames else None,
+                          log=log, cap=self.cap, frame_every_s=self.frame_every,
+                          map_name=self.map_id, db=self.db, experiment_id=self.experiment_id, job_id=job["job_id"])
+        log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
+            f"diag={json.dumps(res['diagnostics'])[:300]}")
+        if res["aborted"]:
+            log("aborted by F8; not recording this job")
+            return None
+        return {"job_id": job["job_id"], "strategy_id": job["strategy_id"], "worker": self.worker,
+                "map": self.map_id, "points": res["points"], "survival_s": res["survival_s"],
+                "diagnostics": res["diagnostics"]}
+
+    def close(self):
+        try:
+            self.cap.close()
+        finally:
+            self.game.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["calibrate", "run"])
@@ -78,8 +145,9 @@ def main():
     ap.add_argument("--baseline", type=int, default=0, help="run the baseline strategy N times (no jobs file)")
     ap.add_argument("--results", default="results.json")
     ap.add_argument("--max-s", type=float, default=180)
-    ap.add_argument("--out-dir", default=data_path("episodes", ""), help="HUD recordings per episode")
-    ap.add_argument("--save-frames", default=data_path("port_frames", ""), help="raw frames for detector retraining ('' = off)")
+    ap.add_argument("--out-dir", default=None, help="HUD recordings per episode (default: <data>/episodes)")
+    ap.add_argument("--save-frames", default=None,
+                    help="raw frames for detector retraining (default: <data>/port_frames, '' = off)")
     ap.add_argument("--worker", default=socket.gethostname())
     ap.add_argument("--frame-every", type=float, default=1.0, help="seconds between saved raw frames")
     ap.add_argument("--weights", default=None, help="detector weights; default: config.yaml, else model/zombies_v1.*")
@@ -90,132 +158,102 @@ def main():
     ap.add_argument("--wait-s", type=float, default=10, help="with --experiment: poll interval while waiting")
     args = ap.parse_args()
 
-    from vision.pipeline import VisionPipeline
-    from bot.hudread import HudReader
-
-    vp = hud = None
-    if args.command == "run":
-        # Load the detector and OCR BEFORE starting the game: they take ~1 min, and an idle player
-        # in round 1 gets killed before the first episode begins.
-        import yaml
-        weights = resolve_weights(args.weights or yaml.safe_load(open(args.config))["vision"]["weights"])
-        log(f"detector weights: {weights}")
-        vp = VisionPipeline.from_config(args.config, live=False, weights=weights)
-        hud = HudReader()
-        log("detector and HUD reader loaded")
-
-    game = PortGame(args.map, log=log).open()
-    log("gpu:", game.gpu())
-    try:
-        game.start()
-        game.align()
-        if args.command == "calibrate":
+    if args.command == "calibrate":
+        game = PortGame(args.map, log=log).open()
+        try:
+            game.start()
+            game.align()
             cpp = calibrate(game)
             json.dump({**load_calib(), "counts_per_px": round(cpp, 4), "machine": args.worker,
                        "calibrated_at": time.strftime("%Y-%m-%d %H:%M")}, open(CALIB, "w"), indent=2)
             log(f"counts_per_px = {cpp:.4f} saved to {CALIB}")
-            return
+        finally:
+            game.close()
+        return
 
-        orch = None
-        if args.experiment:
-            from mongo_orchestrator import MongoOrchestrator
-            orch = MongoOrchestrator(args.experiment)
-            exp = orch.db["experiments"].find_one({"_id": args.experiment})
-            if exp is None:
-                raise SystemExit(f"Unknown experiment {args.experiment}; run `python mongo_orchestrator.py "
-                                 f"--experiment {args.experiment} init --map {args.map}` first")
-            if exp["map"] != args.map:
-                raise SystemExit(f"Experiment {args.experiment} is on map {exp['map']!r}, not {args.map!r}")
-            jobs = []
-        elif args.jobs:
-            jobs = json.load(open(args.jobs))
-        else:
-            jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
-                     "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]
-        results = [] if orch else (json.load(open(args.results)) if os.path.exists(args.results) else [])
-        done = {r["job_id"] for r in results}
-        cpp = load_calib().get("counts_per_px")
-        if cpp is None:
-            cpp = 0.15
-            log("WARNING: no calibration.json; using counts_per_px=0.15. Run `python -m bot.worker calibrate`.")
-        from vision.capture import Capture
-        cap = Capture(game.canvas_region(), 60)  # one capture per worker: dxcam allows one per output
-        log(f"capture backend: {cap.backend} region {game.canvas_region()}")
-        os.makedirs(args.out_dir, exist_ok=True)
-        log(f"{'MongoDB experiment ' + args.experiment if orch else str(len(jobs)) + ' jobs'}, counts_per_px={cpp}")
-
-        luminal = []  # created on first proposal, then reused across generations
-        try:  # entry points are learned per map in MongoDB, also when jobs come from a file
-            from common.db import get_db
-            memory_db = orch.db if orch else get_db()
-        except Exception as e:
-            memory_db = None
-            log(f"MongoDB not available for entry points ({type(e).__name__})")
-
-        def job_stream():
-            """Jobs from the file, or claimed one at a time from MongoDB until the last generation is done."""
-            if orch is None:
-                yield from (j for j in jobs if j["job_id"] not in done)
-                return
-            while True:
-                job = orch.claim_job(args.worker)
-                if job:
-                    yield job
-                    continue
-                st = orch.status()
-                busy = st["jobs"].get("queued", 0) + st["jobs"].get("running", 0)
-                if busy == 0 and st["generation"] >= args.generations:
-                    log(f"generation {st['generation']} complete; stopping")
-                    return
-                if busy == 0 and args.propose:
-                    if not luminal:
-                        from luminal_client import LuminalClient
-                        luminal.append(LuminalClient())
-                        orch.rehydrate_cache(luminal[0])
-                    log(f"queue empty: asking Luminal for generation {st['generation'] + 1}")
-                    out = orch.propose(luminal[0])
-                    log(f"  generation {out['generation']}: {len(out['children'])} children "
-                        f"({sum(c['fallback'] for c in out['children'])} fallbacks), {len(out['jobs'])} jobs queued")
-                    continue
-                time.sleep(args.wait_s)  # other workers are still running, or another machine proposes
-
-        fresh = True  # the session opened above is a new game
-        for i, job in enumerate(job_stream()):
-            if not fresh:
-                game.start()  # reload = fresh game; assets come from cache
-                old = game.canvas_region()
-                if game.align() != old:  # window moved: rebuild the capture
-                    cap.close()
-                    cap = Capture(game.canvas_region(), 60)
-            fresh = False
-            vp.tracker.__init__()  # fresh track ids per episode
-            hud.points_hist.clear()
-            hud.points = None
-            log(f"job {i + 1}/{len(jobs) if orch is None else '?'} {job['kind']} {job['strategy_id'][:8]}")
-            res = run_episode(game, vp, hud, job["params"], max_s=args.max_s, counts_per_px=cpp,
-                              record_path=os.path.join(args.out_dir, f"{job['job_id']}.mp4"),
-                              save_frames_dir=os.path.join(args.save_frames, args.map) if args.save_frames else None,
-                              log=log, cap=cap, frame_every_s=args.frame_every,
-                              map_name=args.map, db=memory_db, experiment_id=args.experiment, job_id=job["job_id"])
-            log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
-                f"diag={json.dumps(res['diagnostics'])[:300]}")
-            if res["aborted"]:
-                log("aborted by F8; not recording this job")
-                if orch:
-                    orch.release_job(job["job_id"], args.worker)  # back in the queue for the next run
-                break
-            result = {"job_id": job["job_id"], "strategy_id": job["strategy_id"], "worker": args.worker,
-                      "map": args.map, "points": res["points"], "survival_s": res["survival_s"],
-                      "diagnostics": res["diagnostics"]}
-            if orch:
-                orch.complete_job(result)
-                log("  stored in MongoDB")
+    if args.experiment:
+        run_mongo(args)
+        return
+    if args.jobs:
+        jobs = json.load(open(args.jobs))
+    else:
+        jobs = [{"job_id": f"baseline-local-{i}-{int(time.time())}", "strategy_id": "baseline",
+                 "kind": "baseline", "params": BASELINE} for i in range(args.baseline)]
+    os.makedirs(os.path.dirname(os.path.abspath(args.results)), exist_ok=True)
+    results = json.load(open(args.results)) if os.path.exists(args.results) else []
+    done = {r["job_id"] for r in results}
+    try:  # entry points are learned per map in MongoDB, also when jobs come from a file
+        from common.db import get_db
+        db = get_db()
+    except Exception as e:
+        db = None
+        log(f"MongoDB not available for entry points ({type(e).__name__})")
+    runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
+                    weights=args.weights, db=db)
+    try:
+        for i, job in enumerate(jobs):
+            if job["job_id"] in done:
                 continue
-            results.append(result)
+            log(f"job {i + 1}/{len(jobs)} {job['kind']} {job['strategy_id'][:8]}")
+            r = runner.run(job)
+            if r is None:
+                break
+            results.append(r)
             with open(args.results, "w") as f:  # write after every job so a crash loses nothing
                 json.dump(results, f, indent=2)
     finally:
-        game.close()
+        runner.close()
+
+
+def run_mongo(args):
+    """Claim jobs from a MongoDB experiment, store each run, and (with --propose) ask Luminal for the next
+    generation when the queue is empty. Other laptops run the same command without --propose."""
+    from mongo_orchestrator import MongoOrchestrator
+    orch = MongoOrchestrator(args.experiment)
+    exp = orch.db["experiments"].find_one({"_id": args.experiment})
+    if exp is None:
+        raise SystemExit(f"Unknown experiment {args.experiment}; run `python mongo_orchestrator.py "
+                         f"--experiment {args.experiment} init --map {args.map}` first")
+    if exp["map"] != args.map:
+        raise SystemExit(f"Experiment {args.experiment} is on map {exp['map']!r}, not {args.map!r}")
+    luminal = []  # created on first proposal, then reused across generations
+
+    def job_stream():
+        while True:
+            job = orch.claim_job(args.worker)
+            if job:
+                yield job
+                continue
+            st = orch.status()
+            busy = st["jobs"].get("queued", 0) + st["jobs"].get("running", 0)
+            if busy == 0 and st["generation"] >= args.generations:
+                log(f"generation {st['generation']} complete; stopping")
+                return
+            if busy == 0 and args.propose:
+                if not luminal:
+                    from luminal_client import LuminalClient
+                    luminal.append(LuminalClient())
+                    orch.rehydrate_cache(luminal[0])
+                log(f"queue empty: asking Luminal for generation {st['generation'] + 1}")
+                out = orch.propose(luminal[0])
+                log(f"  generation {out['generation']}: {len(out['children'])} children "
+                    f"({sum(c['fallback'] for c in out['children'])} fallbacks), {len(out['jobs'])} jobs queued")
+                continue
+            time.sleep(args.wait_s)  # other workers are still running, or another machine proposes
+
+    runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
+                    weights=args.weights, db=orch.db, experiment_id=args.experiment)
+    try:
+        for i, job in enumerate(job_stream()):
+            log(f"job {i + 1} {job['kind']} {job['strategy_id'][:8]} (MongoDB {args.experiment})")
+            r = runner.run(job)
+            if r is None:
+                orch.release_job(job["job_id"], args.worker)  # F8: back in the queue for the next run
+                break
+            orch.complete_job(r)
+            log("  stored in MongoDB")
+    finally:
+        runner.close()
 
 
 if __name__ == "__main__":

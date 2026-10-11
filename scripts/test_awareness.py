@@ -54,7 +54,7 @@ class FakeVision:
     def __init__(self):
         self.tracker = types.SimpleNamespace()
 
-    def step(self, conf, rule, aim_y_offset, frame=None):
+    def step(self, conf, rule, aim_y_offset, frame=None, ego=None):
         i = step["i"]
         step["i"] += 1
         tracks, target = [], None
@@ -62,7 +62,7 @@ class FakeVision:
             x = 700 - 40 * (i - 5)
             if x > 0:
                 b = Box(x - 20, 300, x + 20, 400, 0.8)
-                t = types.SimpleNamespace(id=1, box=b, vx=0, vy=0, trail=[])
+                t = types.SimpleNamespace(id=1, box=b, vx=0, vy=0, trail=[], hits=5, missed=0)
                 tracks, target = [t], t
         obs = types.SimpleNamespace(tracks=tracks, target=target, lock_frames=5 if target else 0,
                                     err_x=(target.box.cx - 640) if target else 0.0,
@@ -127,7 +127,7 @@ def main():
             print(("PASS " if good else "FAIL ") + name)
             ok &= good
         print("diagnostics:", {k: d[k] for k in ("max_active_zombies", "avg_active_zombies", "damage_events",
-                                                 "unseen_hits", "recoil_comp_counts", "pitch_drift_counts")})
+                                                 "unseen_hits", "recoil_comp_counts", "pitch_counts_end")})
         # Entry points need 2+ sightings per bin; insert one more and check they load.
         from bot.awareness import EntryPoints
         db["entry_events"].insert_many([{"map": MAP, "bearing": e["bearing"], "kind": e["kind"]}

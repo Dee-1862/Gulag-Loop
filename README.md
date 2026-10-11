@@ -58,7 +58,8 @@ flowchart LR
 
 ```
 vision/                 on-device eyes (see MD files/VISION.md)
-bot/                    browser game driver, controller (mouse + keys), HUD OCR, worker
+bot/                    browser game driver, controller (mouse + keys), awareness, scoring, HUD OCR, worker
+                        bot/loop.py: single-laptop loop with a JSON state file (no MongoDB)
 tools/port_probe.py     Gate 1 / Gate 2 test on the browser port
 config.yaml             capture window, model path, masks, calibrated per machine
 strategy.py             the 12-parameter strategy schema shared with the controller
@@ -96,6 +97,13 @@ python -m bot.worker run --experiment exp-kino-1 --propose --generations 8     #
 The worker opens the game in its own Chrome, claims a job from MongoDB, plays a 180 s episode with that strategy, stores the run, and repeats. With `--propose`, when the queue is empty it asks Luminal for the next generation itself. Extra laptops run the same command without `--propose` and share the queue. **The mouse belongs to the game while it runs: F8 aborts (the job goes back in the queue), Esc in game releases the mouse.**
 
 Detector weights: `config.yaml` first, else `model/zombies_v1.engine` or `model/zombies_v1.pt` (gitignored). Large local files go to `D:/czb` if it exists, else `local_data/` (override with `CZB_DIR`).
+
+### What the bot does on its own (not evolved)
+
+- **Awareness** (`bot/awareness.py`): tracks its heading from the mouse counts it sends; remembers zombies that left the screen and turns toward the nearest; a red damage flash with nothing on screen makes it turn around and back off; learns the map's **entry points** (where zombies first appear) and stores them per map in MongoDB (`entry_events`), then watches them in turn; measures recoil per shot and pulls down against it.
+- **Scoring** (`bot/scoring.py`): classifies each points-counter change with BO1 values (hit 10, headshot kill 100, torso 60…) into `headshot_rate_est` and related diagnostics, so the agents can see whether head aim pays off.
+- **Rishit's safety rules**: engages only zombies confirmed over 3+ frames, fires when the crosshair is on the body, caps and levels pitch, reloads on empty, reads game-over twice.
+- **HUD**: red layer on every zombie, highlighted head zone on the target, and a compass strip with remembered zombies, entry points and the active-zombie count.
 
 ## Run the evolution loop on MongoDB (manual steps)
 

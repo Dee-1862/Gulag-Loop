@@ -74,7 +74,7 @@ class VisionPipeline:
         import torch
         return torch.cuda.get_device_name(0).replace("NVIDIA GeForce ", "")
 
-    def step(self, conf=0.3, rule="nearest", aim_y_offset=0.2, frame=None):
+    def step(self, conf=0.3, rule="nearest", aim_y_offset=0.2, frame=None, ego=(0.0, 0.0)):
         """Grab (or take) a frame, detect, track, select target. Returns an Observation."""
         if frame is None:
             frame = self.cap.grab()
@@ -82,7 +82,7 @@ class VisionPipeline:
         t0 = time.perf_counter()
         boxes = self.det.detect(frame, conf)
         infer_ms = (time.perf_counter() - t0) * 1000
-        tracks = self.tracker.update(boxes, W)
+        tracks = self.tracker.update(boxes, W, ego)
         target = self.tracker.select(rule, (W / 2, H / 2))
         now = time.perf_counter()
         self.fps = 0.9 * self.fps + 0.1 / max(now - self._t_last, 1e-6)
