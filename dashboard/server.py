@@ -46,6 +46,7 @@ class Backend:
         if self.live is None:
             return dict(mode='live',connected=False,error=self.error)
         if not experiment:
+            self.live.db.command('ping')
             return dict(mode='live',connected=True,error='Select an experiment to inspect its pipeline.')
         with self.lock:
             cached=self.cache.get(experiment)

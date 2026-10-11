@@ -73,3 +73,14 @@ class DashboardTests(TestCase):
 
     def test_invalid_timestamp_is_not_fresh(self):
         self.assertIsNone(age('bad timestamp',self.now))
+
+    def test_empty_experiment_checks_connection(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        with patch('dashboard.server.configuration', return_value={}):
+            backend=Backend()
+        command=Mock(side_effect=RuntimeError('offline'))
+        backend.live=SimpleNamespace(db=SimpleNamespace(command=command))
+        with self.assertRaises(RuntimeError):
+            backend.snapshot('',False)
+        command.assert_called_once_with('ping')
