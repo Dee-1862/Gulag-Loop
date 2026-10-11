@@ -186,6 +186,7 @@ class MongoSource:
     def snapshot(self, experiment_id):
         from pymongo import timeout
         with timeout(6):
+            experiment_id = experiment_id or os.environ.get('DASHBOARD_EXPERIMENT', '')  # hosted copy: pin one experiment
             if experiment_id:
                 exp = self.db.experiments.find_one({'_id': experiment_id}, {'map': 1, 'generation': 1, 'started_at': 1})
                 if not exp:
@@ -219,6 +220,8 @@ class MongoSource:
         from pymongo import timeout
         with timeout(6):
             ids = [str(e['_id']) for e in self.db.experiments.find({'design': 'bot'}, {'_id': 1})]
+            if os.environ.get('DASHBOARD_EXPERIMENT'):
+                ids = [os.environ['DASHBOARD_EXPERIMENT']]
             query = {'experiment_id': {'$in': ids}}
             rows = list(self.db.runs.find(query, {k: 1 for k in RECORD_FIELDS['runs']})
                         .sort([('completed_at', -1), ('_id', -1)]).skip(offset).limit(25))
