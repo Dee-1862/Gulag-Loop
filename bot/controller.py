@@ -193,7 +193,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 my = max(-step, min(step, obs.err_y * k))
                 my = max(-pitch_cap - pitch, min(pitch_cap - pitch, my))  # never stare at the ceiling/floor
                 pitch += keys.move(mx, my)
-                if err < S["fire_radius_px"]:
+                b = tgt.box
+                sx, sy = 0.15 * b.w, 0.15 * b.h  # crosshair inside the (shrunk) body box = any shot hits
+                on_body = (b.x1 + sx < W / 2 < b.x2 - sx) and (b.y1 + sy < H / 2 < b.y2 - sy)
+                if err < S["fire_radius_px"] or on_body:
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target

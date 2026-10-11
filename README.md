@@ -83,6 +83,7 @@ Controller safety rules (not in the genome): pitch is dead-reckoned and capped a
 **Parameter units (agreed with the strategy contract).** Frames are 1280×720, so `fire_radius_px` and `retreat_box_h` are 720p pixels.
 - `aim_gain` = fraction of the on-screen error corrected per frame. Mouse counts = error × `aim_gain` × `counts_per_px`.
 - `aim_max_step` = mouse counts per frame.
+- Fire when the aim error is under `fire_radius_px` **or** the crosshair is inside the target box (shrunk 15%). Close zombies fill the screen, and their head may be above the pitch cap.
 - `scan_turn_px` = screen px of turn per second.
 
 **Calibration on this laptop:** 20 counts turns the view 29.5 px (5 of 6 moves agree), so `counts_per_px = 0.678`. The game ignores mouse look for about 2 s during the spawn "Round" banner, so calibration waits 6 s.
