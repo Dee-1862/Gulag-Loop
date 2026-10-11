@@ -53,6 +53,38 @@ python -m tools.port_probe --map kino --gate1 --bot-seconds 60
 
 ---
 
+## Game worker / controller (`bot/`): plugs into the evolution loop
+
+These implement the "Vision / controller teammate" row of `TEAMMATE_HANDOFF.md` (origin/jeffrey). The worker consumes
+`evolve_local.py jobs` output and writes the `ingest --results` format.
+
+```bash
+python -m bot.worker calibrate                                   # once per machine -> calibration.json (gitignored)
+python -m bot.worker run --jobs jobs.json --results results.json # one 180 s episode per job
+python -m bot.worker run --baseline 2 --results baseline.json    # without the orchestrator
+# The mouse belongs to the game while this runs. F8 aborts the episode, Esc in game releases the mouse.
+```
+
+| File | Does |
+|---|---|
+| `bot/game.py` | `PortGame`: isolated Chrome on the dGPU, load and start, restart by reload (~47 s from cache), real-click pointer lock with pause recovery, viewport alignment |
+| `bot/hudread.py` | easyocr on fixed 720p crops: points (smoothed, rejects jumps), ammo `mag/reserve`, GAME OVER and scoreboard detection |
+| `bot/controller.py` | `run_episode`: executes all 12 strategy params, holds and releases keys safely, F8 abort, computes the §5.4 diagnostics, records the HUD video, saves raw frames for retraining |
+| `bot/worker.py` | jobs → episodes → results.json, written after every job |
+
+**Parameter units (agreed with the strategy contract).** Frames are 1280×720, so `fire_radius_px` and `retreat_box_h` are 720p pixels.
+- `aim_gain` = fraction of the on-screen error corrected per frame. Mouse counts = error × `aim_gain` × `counts_per_px`.
+- `aim_max_step` = mouse counts per frame.
+- `scan_turn_px` = screen px of turn per second.
+
+**Calibration on this laptop:** 20 counts turns the view 29.5 px (5 of 6 moves agree), so `counts_per_px = 0.678`. The game ignores mouse look for about 2 s during the spawn "Round" banner, so calibration waits 6 s.
+
+**First baseline episode:** 42.5 s, 0 points (stood in spawn and was killed), 15 fps loop.
+
+The main weakness is detection on the port. The detector sees zombies in only 10% of frames, and it missed a dark zombie in a doorway. Episodes now save raw port frames, which feed the retraining step.
+
+---
+
 ## Layout
 
 ```
@@ -68,6 +100,8 @@ vision/
   autolabel.py           teacher (YOLOE-L) auto-labels footage into a YOLO dataset
   train.py               trains the yolo11n student and exports TensorRT
   compare.py             before/after side-by-side reel for the video
+bot/
+  game.py / hudread.py / controller.py / worker.py   browser-port worker for the evolution loop
 tools/
   port_probe.py          drives the browser port in isolated Chrome: load, start, Gate 1, live bot loop
 docs/img/                screenshots used in this README
