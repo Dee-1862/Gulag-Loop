@@ -15,6 +15,7 @@ from collections import Counter, deque
 import cv2
 import numpy as np
 
+from bot.awareness import DamageSensor, EntryPoints, Heading, RecoilTracker, ZombieMemory, draw_compass
 from bot.scoring import classify_delta, in_head_zone, summarize as summarize_shots
 
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
@@ -85,7 +86,8 @@ class Keys:
 
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
-                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0):
+                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0,
+                map_name="kino", db=None, experiment_id=None, job_id=None):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -94,6 +96,28 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
     S = clamp_params(params)
     keys = Keys()
+    # --- awareness: heading from the mouse counts we send, zombie memory, damage, entry points, recoil ---
+    heading = Heading(counts_per_px)
+    _raw_move = keys.move
+
+    def tracked_move(dx, dy):
+        _raw_move(dx, dy)
+        heading.on_move(dx, dy)
+    keys.move = tracked_move
+    memory = ZombieMemory()
+    damage = DamageSensor()
+    entries = EntryPoints(map_name, db)
+    try:
+        entries.load()
+    except Exception as e:  # MongoDB unreachable: play without entry points
+        log(f"[ctl] entry points not loaded ({type(e).__name__})")
+    if entries.points:
+        log(f"[ctl] entry points (bearing deg, sightings): {[(round(b), c) for b, c in entries.points]}")
+    recoil = RecoilTracker(counts_per_px)
+    turn_remaining = 0.0
+    evade_until = 0.0
+    unseen_hits = evade_turns = 0
+    active = 0
     aborted = {"v": False}
     hk = keyboard.add_hotkey(abort_key, lambda: aborted.__setitem__("v", True))
     own_cap = cap is None
@@ -168,6 +192,23 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             action = "SCAN"
             keys.tick(now)
 
+            # awareness update
+            visible_ids = {t.id for t in obs.tracks}
+            active = memory.update(obs.tracks, heading, now)
+            for tid in memory.new_ids:
+                it = memory.items[tid]
+                if it["h"] < 0.3:  # first seen far away = coming in through an entry point
+                    entries.record(it["bearing"], "first_seen", el)
+            if damage.update(frame, now) and not obs.tracks:
+                # hit by something we cannot see: it is behind us. Turn around and back off.
+                unseen_hits += 1
+                evade_turns += 1
+                entries.record(heading.yaw + 180.0, "unseen_hit", el)
+                turn_remaining = 180.0 / heading.deg_per_count * (1 if evade_turns % 2 else -1)
+                evade_until = now + 0.6
+            if tgt is not None:
+                recoil.observe(now, tgt.id, obs.err_y)
+
             if obs.nearest_h_frac > 0.6:
                 close_calls += 1
 
@@ -192,6 +233,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         fires += 1
                         if in_head_zone(tgt.box, W / 2, H / 2):
                             head_fires += 1
+                        recoil.on_fire(now, tgt.id, obs.err_y)
+                        comp = recoil.comp_counts()
+                        if comp:
+                            keys.move(0, comp)  # pull down against the learned recoil kick
                     action = "FIRE"
                 else:
                     action = "ENGAGE"
@@ -212,7 +257,30 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 for k_ in ("s", "a", "d"):
                     keys.hold(k_, False)
                 dt = 1 / max(vp.fps, 10)
-                keys.move(S["scan_turn_px"] * dt * counts_per_px, 0)
+                step = max(S["aim_max_step"], 40)
+
+                def clampc(c):
+                    return max(-step, min(step, c))
+                # keep the view level: zombies walk on the floor, not the ceiling
+                level = -clampc(heading.pitch_counts * 0.25) if abs(heading.pitch_counts) > 5 else 0
+                behind = memory.offscreen(now, visible_ids)
+                watch = entries.next_watch(heading, now)
+                if turn_remaining:
+                    d = max(-120.0, min(120.0, turn_remaining))
+                    keys.move(d, level)
+                    turn_remaining = 0.0 if abs(turn_remaining - d) < 1 else turn_remaining - d
+                    action = "EVADE"
+                elif behind:  # a zombie we saw is now off screen: face the closest one
+                    keys.move(clampc(heading.counts_to(behind[0]["bearing"])), level)
+                    action = "TRACK"
+                elif watch is not None:  # watch the learned entry points in turn
+                    c = heading.counts_to(watch)
+                    keys.move(clampc(c * 0.5) if abs(c) > 2 else 0, level)
+                    action = "WATCH"
+                else:
+                    keys.move(S["scan_turn_px"] * dt * counts_per_px, level)
+                if now < evade_until:
+                    keys.hold("s", True)
                 if (S["reload_when_clear_at"] and ammo and ammo[0] < S["reload_when_clear_at"]
                         and ammo[1] > 0 and now - last_reload > 3):
                     keys.press("r")
@@ -236,10 +304,11 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 last5.popleft()
 
             if rec and n % 2 == 0:
-                rec.write(vp.hud_frame(info={"action": action, "points": points if points is not None else "-",
-                                             "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
-                                                         f"{S['target_rule']}"},
-                                       fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H))
+                img = vp.hud_frame(info={"action": action, "points": points if points is not None else "-",
+                                         "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
+                                                     f"{S['target_rule']}"},
+                                   fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H)
+                rec.write(draw_compass(img, heading, memory, entries, active, damage.recently_hit(now, 0.6), now))
             if save_frames_dir and now - t_frame_save > frame_every_s:
                 cv2.imwrite(os.path.join(save_frames_dir, f"{int(now * 1000)}.jpg"), frame,
                             [cv2.IMWRITE_JPEG_QUALITY, 92])
@@ -275,7 +344,21 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "loop_fps": round(n / max(survival, 1e-6), 1),
         "pointer_lock_losses": lock_losses,
         **summarize_shots(shot_tally, head_fires, fires),
+        "damage_events": damage.events,
+        "unseen_hits": unseen_hits,
+        "max_active_zombies": memory.max_active,
+        "avg_active_zombies": round(memory.avg_active, 2),
+        "entry_points_known": len(entries.points),
+        "recoil_jump_px": round(recoil.jump_ema, 1) if recoil.jump_ema is not None else None,
+        "recoil_comp_counts": recoil.comp_counts(),
+        "pitch_drift_counts": heading.pitch_counts,
     }
+    try:
+        saved = entries.save(experiment_id, job_id)
+        if saved:
+            log(f"[ctl] {saved} entry sightings saved to MongoDB")
+    except Exception as e:
+        log(f"[ctl] entry sightings not saved ({type(e).__name__})")
     diagnostics = {k: v for k, v in diagnostics.items() if v is not None}
     return {"points": int(max(0, gained)), "survival_s": round(survival, 1), "game_over": game_over,
             "aborted": aborted["v"], "points_start": points0, "points_end": points, "diagnostics": diagnostics}

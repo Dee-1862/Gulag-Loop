@@ -145,6 +145,12 @@ def main():
         log(f"{'MongoDB experiment ' + args.experiment if orch else str(len(jobs)) + ' jobs'}, counts_per_px={cpp}")
 
         luminal = []  # created on first proposal, then reused across generations
+        try:  # entry points are learned per map in MongoDB, also when jobs come from a file
+            from common.db import get_db
+            memory_db = orch.db if orch else get_db()
+        except Exception as e:
+            memory_db = None
+            log(f"MongoDB not available for entry points ({type(e).__name__})")
 
         def job_stream():
             """Jobs from the file, or claimed one at a time from MongoDB until the last generation is done."""
@@ -189,7 +195,8 @@ def main():
             res = run_episode(game, vp, hud, job["params"], max_s=args.max_s, counts_per_px=cpp,
                               record_path=os.path.join(args.out_dir, f"{job['job_id']}.mp4"),
                               save_frames_dir=os.path.join(args.save_frames, args.map) if args.save_frames else None,
-                              log=log, cap=cap, frame_every_s=args.frame_every)
+                              log=log, cap=cap, frame_every_s=args.frame_every,
+                              map_name=args.map, db=memory_db, experiment_id=args.experiment, job_id=job["job_id"])
             log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
                 f"diag={json.dumps(res['diagnostics'])[:300]}")
             if res["aborted"]:
