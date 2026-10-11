@@ -14,9 +14,9 @@ GAME_OVER_BOX = (250, 140, 1030, 330)   # "GAME OVER / You Survived N Rounds", t
 
 
 class HudReader:
-    def __init__(self, model_dir="D:/czb/models/easyocr"):
+    def __init__(self, model_dir="D:/czb/models/easyocr", gpu=True):
         import easyocr
-        self.ocr = easyocr.Reader(["en"], gpu=True, model_storage_directory=model_dir, verbose=False)
+        self.ocr = easyocr.Reader(["en"], gpu=gpu, model_storage_directory=model_dir, verbose=False)
         self.points_hist = deque(maxlen=3)
         self.points = None
 
@@ -43,6 +43,19 @@ class HudReader:
         txt = " ".join(t for t, c in self._read(frame, AMMO_BOX, "0123456789/ ") if c > 0.2)
         m = re.match(r"\s*(\d+)\s*/\s*(\d+)", txt)
         return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def scoreboard(self, frame):
+        """Post-game table 'Player  <points> <kills> <headshots>' -> dict, or None if not visible yet."""
+        # header row sits ~y 270-290 (720p) and the values row ~y 300-320; read the band and pick digits
+        band = frame[260:340, 700:1050]
+        band = cv2.resize(band, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        items = self.ocr.readtext(band, detail=1, paragraph=False)
+        words = " ".join(t for _, t, _ in items).upper()
+        nums = sorted(((b[0][0], t) for b, t, c in items if t.strip().isdigit()), key=lambda x: x[0])
+        if "KILLS" not in words or len(nums) < 3:
+            return None
+        pts, kills, heads = (int(t) for _, t in nums[:3])
+        return {"points": pts, "kills": kills, "headshots": heads}
 
     def game_over(self, frame):
         txt = " ".join(t for t, c in self._read(frame, GAME_OVER_BOX, None, scale=1.0)).upper()

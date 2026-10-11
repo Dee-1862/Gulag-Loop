@@ -53,10 +53,19 @@ def is_foreground(title_substr):
     return hwnd is not None and user32.GetForegroundWindow() == hwnd
 
 
+# 2x2 tiles of 640x360 CSS viewports in --app windows (no tab strip / omnibox), DIP coordinates
+TILE_W, TILE_H, APP_CHROME_H = 640, 360, 150  # --app window: title bar + frame measured at 150 DIP
+
+
 class PortGame:
-    def __init__(self, map_id="kino", profile="D:/czb/chrome-profile", log=print):
+    def __init__(self, map_id="kino", profile="D:/czb/chrome-profile", log=print, slot=None, input_mode="os"):
+        """slot=None: one big window driven by real OS input (pydirectinput, needs the foreground).
+        slot=0..3 + input_mode='js': small tiled window driven by in-page synthetic input (bot.jsinput),
+        so several games run side by side without focus or the physical mouse."""
         self.map_id = map_id
-        self.profile = profile
+        self.slot = slot
+        self.input_mode = input_mode
+        self.profile = profile if slot is None else f"{profile}-{slot}"
         self.log = log
         self._pw = self._ctx = self.page = None
         self.title = None
@@ -66,9 +75,22 @@ class PortGame:
     def open(self):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
+        if self.slot is None:
+            args, viewport = CHROME_ARGS, {"width": 1280, "height": 720}
+        else:
+            col, row = self.slot % 2, self.slot // 2
+            args = [a for a in CHROME_ARGS if not a.startswith("--window-size")] + [
+                "--app=about:blank", f"--window-size={TILE_W + 16},{TILE_H + APP_CHROME_H}",
+                f"--window-position={col * (TILE_W + 24)},{row * 300}",  # may overlap: frames come from the page
+                "--autoplay-policy=no-user-gesture-required"]
+            viewport = None
+        kw = {"viewport": viewport} if viewport else {"no_viewport": True}  # no_viewport: window size is respected
         self._ctx = self._pw.chromium.launch_persistent_context(
-            self.profile, channel="chrome", headless=False, viewport={"width": 1280, "height": 720}, args=CHROME_ARGS)
+            self.profile, channel="chrome", headless=False, args=args, ignore_default_args=["--enable-automation"], **kw)
         self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        if self.input_mode == "js":
+            from bot.jsinput import INIT_SCRIPT
+            self.page.add_init_script(INIT_SCRIPT)
         return self
 
     def close(self):
@@ -95,6 +117,11 @@ class PortGame:
         else:
             self.page.goto(URL.format(self.map_id), wait_until="domcontentloaded")
         self.title = self.page.title()
+        if self.slot is not None:  # unique window title so each worker finds its own tile
+            self.title = f"bot{self.slot} {self.map_id}"
+            self.page.evaluate("t => { document.title = t; new MutationObserver(() => { if (document.title !== t) "
+                               "document.title = t; }).observe(document.querySelector('title'), {childList: true}); }",
+                               self.title)
         clicked = set()
         t_ready = None
         while time.time() - t0 < timeout:
@@ -111,7 +138,14 @@ class PortGame:
                 clicked.add(st["play"])
                 if st["play"].lower().startswith("click to start"):
                     t_ready = time.time()
-            if st["screen"] == "playing" or (t_ready and time.time() - t_ready > 2):
+            if self.input_mode == "js":
+                if st["screen"] == "playing" and self.locked():
+                    time.sleep(1.0)
+                    self.log(f"[game] slot {self.slot} {self.map_id} playing after {time.time() - t0:.0f}s")
+                    return time.time() - t0
+                if t_ready and time.time() - t_ready > 2 and int(time.time() * 2) % 4 == 0:
+                    self.ensure_locked(tries=1)  # clicks the canvas: dismisses the intro, takes the (fake) lock
+            elif st["screen"] == "playing" or (t_ready and time.time() - t_ready > 2):
                 if self.ensure_locked(tries=4):
                     self.log(f"[game] {self.map_id} playing after {time.time() - t0:.0f}s")
                     return time.time() - t0
@@ -125,6 +159,14 @@ class PortGame:
         except Exception:
             return False
 
+    def keys(self):
+        """Input backend for the controller."""
+        if self.input_mode == "js":
+            from bot.jsinput import JSKeys
+            return JSKeys(self.page)
+        from bot.controller import Keys
+        return Keys()
+
     def real_click_canvas(self):
         import pydirectinput
         pydirectinput.FAILSAFE = False
@@ -132,6 +174,19 @@ class PortGame:
         pydirectinput.click((r[0] + r[2]) // 2, (r[1] + r[3]) // 2)
 
     def ensure_locked(self, tries=3):
+        if self.input_mode == "js":
+            # fake lock: a click on the canvas lets the page request it (the "click to start" path)
+            for _ in range(tries):
+                if self.locked():
+                    return True
+                box = self.page.locator("#game").bounding_box()
+                if box:
+                    self.page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                time.sleep(0.8)
+                if not self.locked():
+                    self.page.evaluate("() => window.__bot.lock()")
+                    time.sleep(0.5)
+            return self.locked()
         for _ in range(tries):
             if self.locked():
                 return True
@@ -152,6 +207,16 @@ class PortGame:
         if self._region:
             return self._region
         L, T, R, B = find_window_region(self.title)
+        if self.slot is not None:  # --app window: Chrome draws its title bar inside the client area; viewport at bottom
+            iw, ih, dpr = self.page.evaluate("[innerWidth, innerHeight, devicePixelRatio]")
+            vw, vh = int(round(iw * dpr)), int(round(ih * dpr))
+            if vw * 9 > vh * 16:  # canvas is 16:9, centered horizontally if the viewport is wider
+                cw = vh * 16 // 9
+                x0 = L + (R - L - vw) // 2 + (vw - cw) // 2
+                return (x0, B - vh, x0 + cw, B)
+            ch = vw * 9 // 16
+            x0 = L + (R - L - vw) // 2
+            return (x0, B - vh + (vh - ch) // 2, x0 + vw, B - vh + (vh - ch) // 2 + ch)
         w = R - L
         vw = w - (w % 16)
         vh = vw * 9 // 16

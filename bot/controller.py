@@ -90,6 +90,9 @@ class Keys:
     def press(self, key):
         self.pdi.press(key)
 
+    def flush(self):
+        pass  # OS input is sent immediately
+
     def release_all(self):
         for k in list(self.held):
             self.pdi.keyUp(k)
@@ -98,7 +101,7 @@ class Keys:
 
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
-                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0):
+                save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0, latency_s=0.11):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -106,7 +109,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     from vision.run import Recorder
 
     S = clamp_params(params)
-    keys = Keys()
+    keys = game.keys() if hasattr(game, "keys") else Keys()
+    # Moves reach the screen ~latency_s later (input -> game render -> capture). Without accounting for that,
+    # several corrections stack up before the first one is visible: overshoot, oscillation, lost track ids.
+    inflight = deque()  # (t_sent, counts_x, counts_y)
     aborted = {"v": False}
     hk = keyboard.add_hotkey(abort_key, lambda: aborted.__setitem__("v", True))
     own_cap = cap is None
@@ -136,6 +142,8 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     go_hits = 0
     pitch = 0.0  # dead-reckoned vertical mouse counts from the spawn view (+ = looking down)
     last_seen_t, last_seen_dir = -1e9, 1  # where the last target left the screen
+    first_seen_s = None
+    last_visible_t = -1e9  # any confirmed zombie on screen (not just the target)
     sweep_t0, sweep_dir = time.time(), 1
     pitch_cap = 280.0 * counts_per_px  # mouse counts for ~280 screen px of pitch either way
 
@@ -179,9 +187,15 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                         break
                 t_hud = now
 
-            sx, sy = keys.take_sent()
+            landed_x = landed_y = 0
+            while inflight and now - inflight[0][0] >= latency_s:
+                _, cx_, cy_ = inflight.popleft()
+                landed_x += cx_
+                landed_y += cy_
+            pend_x = sum(m[1] for m in inflight) / counts_per_px  # screen px still to arrive
+            pend_y = sum(m[2] for m in inflight) / counts_per_px
             obs = vp.step(S["det_conf"], S["target_rule"], S["aim_y_offset"], frame=frame,
-                          ego=(-sx / counts_per_px, -sy / counts_per_px))
+                          ego=(-landed_x / counts_per_px, -landed_y / counts_per_px))
             n += 1
             det_sum += obs.telemetry["n_boxes"]
             tgt = obs.target
@@ -192,6 +206,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
 
             if obs.nearest_h_frac > 0.6:
                 close_calls += 1
+            if any(t.hits >= 3 and t.missed == 0 for t in obs.tracks):
+                last_visible_t = now
+                if first_seen_s is None:
+                    first_seen_s = round(el, 1)
 
             if tgt is not None:
                 last_seen_t = now
@@ -205,16 +223,18 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 prev_err_sign, prev_tid = sign, tgt.id
                 if acquiring is None or acquiring[0] != tgt.id:
                     acquiring = (tgt.id, n)
+                # error the camera will still have once in-flight moves land
+                ex, ey = obs.err_x - pend_x, obs.err_y - pend_y
                 k = S["aim_gain"] * counts_per_px
                 step = S["aim_max_step"]
-                mx = max(-step, min(step, obs.err_x * k))
-                my = max(-step, min(step, obs.err_y * k))
+                mx = max(-step, min(step, ex * k))
+                my = max(-step, min(step, ey * k))
                 my = max(-pitch_cap - pitch, min(pitch_cap - pitch, my))  # never stare at the ceiling/floor
                 pitch += keys.move(mx, my)
                 b = tgt.box
                 sx, sy = 0.15 * b.w, 0.15 * b.h  # crosshair inside the (shrunk) body box = any shot hits
                 on_body = (b.x1 + sx < W / 2 < b.x2 - sx) and (b.y1 + sy < H / 2 < b.y2 - sy)
-                if err < S["fire_radius_px"] or on_body:
+                if math.hypot(ex, ey) < S["fire_radius_px"] or on_body:
                     if acquiring and acquiring[1] >= 0:
                         lock_frame_counts.append(n - acquiring[1])
                         acquiring = (tgt.id, -1)  # count time-to-lock once per target
@@ -272,6 +292,10 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
                 still_since = None
             prev_small = small
 
+            sx, sy = keys.take_sent()
+            if sx or sy:
+                inflight.append((now, sx, sy))
+            keys.flush()
             last5.append((now, obs.telemetry["n_tracks"], obs.nearest_h_frac, action, ammo[0] if ammo else None))
             while last5 and now - last5[0][0] > 5:
                 last5.popleft()
@@ -288,15 +312,32 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
     finally:
         keys.release_all()
         keyboard.remove_hotkey(hk)
-        if own_cap:
+        if own_cap and not game_over:
             cap.close()
         if rec:
             rec.close()
 
     survival = min(max_s, time.time() - t0)
+    t_end = time.time()
+    board = None
+    if game_over:  # exact numbers from the post-game table (appears a few seconds after GAME OVER)
+        t_sb = time.time()
+        while time.time() - t_sb < 8 and board is None:
+            try:
+                board = hud.scoreboard(cv2.resize(cap.grab(), (1280, 720), interpolation=cv2.INTER_AREA))
+            except Exception:
+                board = None
+            if board is None:
+                time.sleep(0.7)
+        if board:
+            log(f"[ctl] scoreboard: {board}")
+        if own_cap:
+            cap.close()
     gained = (points - points0) if (points is not None and points0 is not None) else 0
+    if board:  # trust the scoreboard over live HUD OCR (Kino starts with 500)
+        gained = max(0, board["points"] - (points0 if points0 is not None else 500))
     cap_pts = 130 * fires  # +10 per hit, at most +130 for a kill; no shots means no points
-    if gained > cap_pts:
+    if gained > cap_pts and not board:
         log(f"[ctl] OCR points gain {gained} exceeds plausible {cap_pts} for {fires} shots; capping")
         gained = cap_pts
     acts = [a[3] for a in last5]
@@ -317,6 +358,12 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
         "det_count_avg": round(det_sum / n, 2) if n else 0.0,
         "stuck_events": stuck_events,
         "death_time_s": round(survival, 1) if game_over else None,
+        "kills": board["kills"] if board else None,
+        "headshots": board["headshots"] if board else None,
+        "first_zombie_seen_s": first_seen_s,
+        # died with no zombie on screen for the last 2 s = attacked from behind / off-screen
+        "death_unseen_attacker": (t_end - last_visible_t > 2.0) if game_over else None,
+        "s_since_last_zombie_seen_at_death": round(min(t_end - last_visible_t, 999), 1) if game_over else None,
         "last_5s_summary": summary,
         "loop_fps": round(n / max(survival, 1e-6), 1),
         "pointer_lock_losses": lock_losses,

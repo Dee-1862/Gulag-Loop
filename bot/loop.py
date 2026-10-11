@@ -44,6 +44,8 @@ def main():
     ap.add_argument("--max-s", type=float, default=180)
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--seed-profiles", action="store_true", help="gen 0 = baseline + Aggressive/Conservative/Sniper/Kiter")
+    ap.add_argument("--evals-per-child", type=int, default=2, help="evaluations queued per new child (noise control)")
     args = ap.parse_args()
 
     evo = load_evo(args.evo_dir)
@@ -52,9 +54,13 @@ def main():
         state = evo.load_state(args.state)
         log(f"resumed {args.state}: generation {state['generation']}")
     else:
-        state = evo.initial_state()
+        if args.seed_profiles:
+            from bot.parallel import seeded_state
+            state = seeded_state(evo)
+        else:
+            state = evo.initial_state()
         evo.save_state(args.state, state, create=True)
-        log(f"new experiment {args.state}: 2 baseline jobs queued")
+        log(f"new experiment {args.state}: {len(state['jobs'])} jobs queued")
 
     runner = Runner(args.map, args.config, max_s=args.max_s)
     try:
@@ -85,6 +91,10 @@ def main():
                     if child.get("persona") in ("Bold", "Tuner", "Defender", "Explorer") and not child.get("fallback"):
                         client.cache[child["persona"]] = Proposal(strategy=child["params"], rationale=child["rationale"])
             state = evo.advance(state, client)
+            for c in state["strategies"]:  # extra evaluations per child: one run is mostly noise
+                if c.get("generation") == state["generation"] and c.get("persona") != "Baseline":
+                    state["jobs"] += [evo.make_job(c["_id"], state["generation"], "child")
+                                      for _ in range(args.evals_per_child - 1)]
             evo.save_state(args.state, state)
             log(f"proposed generation {state['generation']} via {kind} in {time.time() - t:.1f}s")
             for c in state["strategies"]:

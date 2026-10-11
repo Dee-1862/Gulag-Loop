@@ -78,6 +78,29 @@ git worktree add D:/czb/evo origin/jeffrey          # the evolution code, untouc
 python -m bot.loop --evo-dir D:/czb/evo --state D:/czb/evo_state/kino.json --generations 3
 ```
 
+### Parallel games on one machine: tried, doesn't work with this port
+
+`bot/parallel.py`, `bot/jsinput.py` and `bot/screencast.py` drive tiled `--app` Chrome windows with in-page
+synthetic input: a fake pointer lock plus `mousemove`/`keydown` events. `input.js` never checks `isTrusted`, and
+this does turn the camera in a **focused** window. But:
+- **Covered windows don't render.** A screencast of a tile behind another window is solid black.
+- **Unfocused windows ignore input**, even with `hasFocus`/visibility spoofed and blur events swallowed.
+
+Real parallelism means **one worker per laptop** (`bot.worker` / `bot.loop` on each machine). The parallel code stays
+for reference.
+
+### Feedback quality (what the agents see)
+- **Exact scoring:** after GAME OVER, the post-game table (Points / Kills / Headshots) is read by OCR, and its points
+  replace the live-HUD estimate. `kills` and `headshots` are added to the diagnostics.
+- **Death cause:** `death_unseen_attacker` (no zombie on screen in the last 2 s) and
+  `s_since_last_zombie_seen_at_death` separate "killed from behind" from "lost the fight".
+  `first_zombie_seen_s` measures how fast the scan finds anything.
+- **Noise control:** every new child is evaluated twice (`--evals-per-child 2`), and the champion re-run stays.
+- **Generation 0 seeds:** `--seed-profiles` starts from baseline + Aggressive / Conservative / Sniper / Kiter
+  playstyles (`bot/parallel.py: PROFILES`).
+- **Latency compensation:** moves take ~110–130 ms to show up on screen. The controller subtracts in-flight moves
+  from the aim error and applies tracker ego-motion only when moves land (this was the aim "spazzing").
+
 Controller safety rules (not in the genome): pitch is dead-reckoned and capped at about ±160 screen px, and it levels back to the horizon while scanning, so one bad aim frame can't leave the bot staring at the ceiling. Sub-count mouse remainders carry over between frames. Game over must be read twice in a row.
 
 **Parameter units (agreed with the strategy contract).** Frames are 1280×720, so `fire_radius_px` and `retreat_box_h` are 720p pixels.
