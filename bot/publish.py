@@ -77,6 +77,13 @@ class Publisher:
             "notes": notes or "browser-port bot (bot/loop.py), published by bot/publish.py"}}, upsert=True)
 
     # ---------- evolution state mirror ----------
+    def sid(self, strategy_id):
+        """Team convention: fixed names are namespaced per experiment ('exp-kino-1:baseline'); UUIDs stay global."""
+        s = str(strategy_id)
+        if len(s) == 36 and s.count("-") == 4 or s.startswith(self.exp + ":"):
+            return s
+        return f"{self.exp}:{s}"
+
     def sync_state(self, state):
         """Idempotent mirror of a local evolution.py state into the dashboard collections."""
         from pymongo import UpdateOne
@@ -86,30 +93,30 @@ class Publisher:
         best = None
         means = {}
         for r in state["runs"]:
-            means.setdefault(r["strategy_id"], []).append(r["points"] + 5 * r["survival_s"])
+            means.setdefault(self.sid(r["strategy_id"]), []).append(r["points"] + 5 * r["survival_s"])
         if means:
             best = max(means, key=lambda k: sum(means[k]) / len(means[k]))
         pb_ops = []
         for c in state["strategies"]:
-            pb_ops.append(UpdateOne({"_id": c["_id"]}, {"$set": {
+            pb_ops.append(UpdateOne({"_id": self.sid(c["_id"])}, {"$set": {
                 **q, "persona": c.get("persona"), "generation": c.get("generation", 0), "model": c.get("model"),
-                "rationale": c.get("rationale"), "parent_ids": c.get("parent_ids", []),
+                "rationale": c.get("rationale"), "parent_ids": [self.sid(x) for x in c.get("parent_ids", [])],
                 "changed_params": c.get("changed_params", []), "fallback": c.get("fallback", False),
                 "fallback_source": c.get("fallback_source"), "params": c.get("params"),
-                "is_best": c["_id"] == best}, "$setOnInsert": {"created_at": _dt(c.get("created_at")) or now}},
+                "is_best": self.sid(c["_id"]) == best}, "$setOnInsert": {"created_at": _dt(c.get("created_at")) or now}},
                 upsert=True))
         job_ops = []
         done = {r["job_id"] for r in state["runs"]}
         for j in state["jobs"]:
             job_ops.append(UpdateOne({"_id": j["job_id"]}, {"$set": {
-                **q, "job_id": j["job_id"], "strategy_id": j["strategy_id"], "generation": j.get("generation", 0),
+                **q, "job_id": j["job_id"], "strategy_id": self.sid(j["strategy_id"]), "generation": j.get("generation", 0),
                 "kind": j.get("kind"), "status": "done" if j["job_id"] in done else j.get("status", "queued"),
                 "worker": self.worker if j["job_id"] in done else None},
                 "$setOnInsert": {"created_at": now}}, upsert=True))
         run_ops = []
         for r in state["runs"]:
             run_ops.append(UpdateOne({"_id": r["job_id"]}, {"$set": {
-                **q, "job_id": r["job_id"], "strategy_id": r["strategy_id"],
+                **q, "job_id": r["job_id"], "strategy_id": self.sid(r["strategy_id"]),
                 "generation": jobs.get(r["job_id"], {}).get("generation", 0), "worker": r.get("worker"),
                 "map": r.get("map"), "points": r["points"], "survival_s": r["survival_s"],
                 "fitness": r["points"] + 5 * r["survival_s"], "diagnostics": r.get("diagnostics", {})},
@@ -120,8 +127,9 @@ class Publisher:
         for i, c in enumerate(state.get("llm_calls", [])):
             key = f"{self.exp}:{c.get('strategy_id')}:{c.get('attempt')}:{c.get('persona')}:{i}"
             call_ops.append(UpdateOne({"_id": key}, {"$set": {
-                **q, **{k: c.get(k) for k in ("persona", "model", "generation", "strategy_id", "ok", "attempt",
+                **q, **{k: c.get(k) for k in ("persona", "model", "generation", "ok", "attempt",
                                                "tokens", "latency_ms", "error_type", "http_status")},
+                "strategy_id": self.sid(c.get("strategy_id")),
                 "created_at": _dt(c.get("created_at")) or now}}, upsert=True))
         for coll, ops in (("playbooks", pb_ops), ("jobs", job_ops), ("runs", run_ops), ("llm_calls", call_ops)):
             if ops:
@@ -183,7 +191,9 @@ class Publisher:
             os.unlink(tmp.name)
         self.db.footage.update_one({"_id": f"{job_id}:{kind}"}, {"$set": {
             "experiment_id": self.exp, "job_id": job_id, "kind": kind, "gridfs_bucket": "footage", "file_id": fid,
-            "bytes": size, "created_at": _now(), **(meta or {})}}, upsert=True)
+            "bytes": size, "created_at": _now(), **(meta or {}),
+            **({"strategy_id": self.sid(meta["strategy_id"])} if meta and meta.get("strategy_id") else {})}},
+            upsert=True)
         return fid
 
 
