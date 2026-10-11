@@ -8,6 +8,26 @@ from dashboard.server import Backend
 from common.monitoring import Reporter
 
 class DashboardTests(TestCase):
+    def test_recordings_include_all_history_and_project_only_public_metadata(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from dashboard.data import MongoSource
+        source = MongoSource.__new__(MongoSource)
+        footage = Mock()
+        source.db = SimpleNamespace(footage=footage)
+        rows = [dict(experiment_id='archived', job_id=f'job-{i}', created_at=self.now,
+                     file_id='internal-file-id', private_note='not public') for i in range(50)]
+        footage.find.return_value.sort.return_value = rows
+        result = source.recordings()
+        self.assertEqual(len(result), 50)
+        self.assertEqual(result[-1]['job_id'], 'job-49')
+        self.assertEqual(footage.find.call_args.args[0], {'kind': 'hud_video'})
+        self.assertNotIn('private_note', result[0])
+        self.assertNotIn('file_id', result[0])
+        self.assertEqual(result[0]['created_at'], self.now.isoformat())
+        source.recordings('one-experiment')
+        self.assertEqual(footage.find.call_args.args[0], {'kind': 'hud_video', 'experiment_id': 'one-experiment'})
+
     def snapshot(self, signals=(), runs=(), calls=(), books=()):
         return assemble({'_id':'test','generation':1,'map':'kino'}, [], list(runs), list(calls), list(books), list(signals), {}, self.now)
 

@@ -205,9 +205,23 @@ class MongoSource:
             result = assemble_history(experiments, jobs, runs, calls, playbooks, signals, counts) if not experiment_id else assemble(exp, jobs, runs, calls, playbooks, signals, counts)
             result['jobs'] = {r['_id']: r['count'] for r in self.db.jobs.aggregate([
                 {'$match': q}, {'$group': {'_id': '$status', 'count': {'$sum': 1}}}])}
-            result['footage'] = clean([{k: f.get(k) for k in FOOTAGE_FIELDS if k in f} for f in self.db.footage.find(
-                {**q, 'kind': 'hud_video'}, {k: 1 for k in FOOTAGE_FIELDS}).sort('created_at', -1).limit(24)])
+            result['footage'] = self.recordings(experiment_id)
             return result
+
+    def recordings(self, experiment_id=''):
+        """All saved episode metadata; video bytes are fetched only when a recording is selected.
+
+        The combined gallery also includes footage whose experiment record is missing
+        or has a different design tag. Its original experiment/job still identifies playback.
+        """
+        from pymongo import timeout
+        query = {'kind': 'hud_video'}
+        if experiment_id:
+            query['experiment_id'] = experiment_id
+        with timeout(6):
+            rows = self.db.footage.find(query, {k: 1 for k in FOOTAGE_FIELDS})
+            return clean([{k: f[k] for k in FOOTAGE_FIELDS if k in f}
+                          for f in rows.sort([('created_at', -1), ('_id', -1)])])
 
     def history(self, offset=0):
         """Page older evaluations across all bot experiments without loading the whole history."""

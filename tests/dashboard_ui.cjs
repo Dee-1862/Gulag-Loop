@@ -117,6 +117,19 @@ test('recordings with the same job name retain their original experiment',async 
  assert.match(h.get('recording').getAttribute('src'),/experiment=b/);assert.match(h.get('recording').getAttribute('src'),/job=same-job/);
  h.w.eval('render({connected:false,mode:"live"})');assert.equal(h.get('recording').hidden,true);assert.equal(h.get('recording').hasAttribute('src'),false);
 });
+test('all fifty recordings are available and older playback survives a new arrival',async t=>{
+ const h=harness(t);await h.start();
+ const footage=Array.from({length:50},(_,i)=>({experiment_id:`experiment-${i%6}`,job_id:`job-${i}`,points:i,created_at:'2026-10-11T12:00:00Z'}));
+ h.respond('/api/snapshot',{...data('all'),footage});await settle();
+ assert.equal(h.d.querySelectorAll('.recording-item').length,50);
+ assert.match(h.get('recordings-count').textContent,/50 SAVED/);
+ h.d.querySelectorAll('.recording-item')[49].click();
+ const src=h.get('recording').getAttribute('src');assert.match(src,/job=job-49/);
+ h.w.eval('render('+JSON.stringify({...data('all'),footage:[{experiment_id:'new',job_id:'new'},...footage]})+')');
+ assert.equal(h.d.querySelectorAll('.recording-item').length,51);
+ assert.equal(h.get('recording').getAttribute('src'),src);
+ assert.equal(h.d.querySelector('.recording-item.selected').dataset.job,JSON.stringify(['experiment-1','job-49']));
+});
 test('all three layer backgrounds are interactive',async t=>{
  const h=harness(t);await h.start();h.respond('/api/snapshot',data());await settle();
  const layer=h.d.querySelector('[data-layer="agents"]');layer.dispatchEvent(new h.w.KeyboardEvent('keydown',{key:'Enter'}));

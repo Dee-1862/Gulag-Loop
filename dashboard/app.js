@@ -269,16 +269,16 @@ $('view-records').addEventListener('click',event=>{
 let recordingKey='',recordingJob='';
 function renderRecordings(data,query){
  const items=data.footage||[],personas={};(data.records?.strategies||[]).forEach(s=>personas[strategyId(s)]=s.persona);
- $('recordings-count').textContent=`${items.length} SAVED`;
- const key=(query.get('mode')||'live')+':'+(query.get('experiment')||'')+'|'+items.map(f=>rowKey(f.experiment_id,f.job_id)).join(',');
+ $('recordings-count').textContent=`${items.length} SAVED · ALL RECORDINGS`;
+ const key=(query.get('mode')||'live')+':'+(query.get('experiment')||'')+'|'+JSON.stringify([items,personas]);
  if(key===recordingKey)return;
  const sameExperiment=recordingKey.split('|')[0]===key.split('|')[0];recordingKey=key;
  if(!sameExperiment||!items.some(f=>rowKey(f.experiment_id,f.job_id)===recordingJob)){ // a different experiment: never keep its old video
   recordingJob='';const v=$('recording');v.pause();v.removeAttribute('src');v.load();v.hidden=true;$('recording-empty').hidden=false;
-  $('recording-caption').textContent='Recordings appear when a worker publishes footage across all experiments.';}
+  $('recording-caption').textContent='Every saved episode across all experiments, newest first. Select a recording to play.';}
  if(!items.length){$('recordings-list').innerHTML='<p class="empty">No recordings in the saved history yet.</p>';return;}
  $('recordings-list').innerHTML=items.map(f=>{const who=personas[rowKey(f.experiment_id,f.strategy_id)]||String(f.strategy_id||'').split(':').pop();
-  return `<button class="recording-item${rowKey(f.experiment_id,f.job_id)===recordingJob?' selected':''}" data-job="${esc(rowKey(f.experiment_id,f.job_id))}"><span><b>${esc(who)}</b><small>${esc(f.experiment_id||'')} · gen ${esc(f.generation??0)} · ${esc(String(f.job_id).slice(0,8))}</small></span><span>${fmt(f.points)} pts · ${esc(f.kills??'—')} kills</span><span>${fmt(f.survival_s)}s · fit ${fmt(f.fitness)}</span></button>`;}).join('');
+  return `<button class="recording-item${rowKey(f.experiment_id,f.job_id)===recordingJob?' selected':''}" data-job="${esc(rowKey(f.experiment_id,f.job_id))}"><span><b>${esc(who||'Episode')}</b><small>${esc(f.experiment_id||'')} · gen ${esc(f.generation??0)} · ${esc(String(f.job_id).slice(0,8))}</small><small>${esc(recordTime(f.created_at))}</small></span><span>${fmt(f.points)} pts · ${esc(f.kills??'—')} kills</span><span>${fmt(f.survival_s)}s · fit ${fmt(f.fitness)}</span></button>`;}).join('');
  document.querySelectorAll('.recording-item').forEach(b=>b.addEventListener('click',()=>{
   recordingJob=b.dataset.job;document.querySelectorAll('.recording-item').forEach(x=>x.classList.toggle('selected',x===b));
   const [experiment,job]=JSON.parse(recordingJob);const q=new URLSearchParams({mode:'live',experiment,job});

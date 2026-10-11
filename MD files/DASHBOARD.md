@@ -38,6 +38,10 @@ and evaluation counts instead of a misleading shared generation number.
 ## Views
 
 - **Overview:** worker viewport, four agent cards, and episode recordings.
+  The recordings gallery includes every saved HUD video across all experiments,
+  newest first, including older footage outside the recent run sample. Only metadata
+  loads with the gallery; selecting an episode loads its video. Recordings retain their
+  experiment and job identity even if the original experiment record is missing.
 - **Data flow:** three clickable layers: Vision & game, MongoDB memory, four Luminal
   agents. Four two-way connections link MongoDB to Bold, Tuner, Defender and Explorer.
   Click a layer, node or connection to see evidence, saved rationales and exact
