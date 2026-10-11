@@ -53,7 +53,7 @@ function render(data){snapshot=data;const connected=Boolean(data.connected);cons
  agents(data.agents);if($('detail').open&&selectedPersona)openAgent(selectedPersona);
  $('model-name').textContent=data.model?.split('/').pop()||'No model recorded';$('calls-count').textContent=(data.counts?.llm_calls??'—')+' calls recorded';drawChart(data.chart);$('sample-note').textContent=data.runs_sampled!=null?`${data.runs_sampled} recent evaluations (max 500)`:'No results yet';
  $('collections').innerHTML=['jobs','runs','playbooks','llm_calls'].map(name=>`<div class="collection"><span class="collection-icon">▱</span><div><strong>${fmt(data.counts?.[name])}</strong><small>${name}</small></div><span>${ready?'↗':'—'}</span></div>`).join('');
- $('db-updated').textContent=data.events?.[0]?.at?'Latest activity '+ageLabel(data.events[0].at):'No activity recorded';const stamp=data.updated_at||receivedAt;$('last-refresh').textContent=(stamp?'Snapshot '+new Date(stamp).toLocaleTimeString():'No snapshot received')+' · '+(paused?'paused':demo?'demo data':'polls every 2 seconds');$('db-live').textContent=paused?'PAUSED':demo?'DEMO SNAPSHOT':connected?'POLLING · 2s':'OFFLINE';events();renderGraph();
+ $('db-updated').textContent=data.events?.[0]?.at?'Latest activity '+ageLabel(data.events[0].at):'No activity recorded';const stamp=data.updated_at||receivedAt;$('last-refresh').textContent=(stamp?'Snapshot '+new Date(stamp).toLocaleTimeString():'No snapshot received')+' · '+(paused?'paused':demo?'demo data':'polls every 2 seconds');$('db-live').textContent=paused?'PAUSED':demo?'DEMO SNAPSHOT':connected?'POLLING · 2s':'OFFLINE';events();renderGraph();renderRecords();
 }
 async function refresh(){
  if(loading||listing)return;
@@ -186,8 +186,8 @@ function renderGraph(){
 function graphView(){const svg=$('backend-graph');svg.setAttribute('viewBox',`${graphBox.x} ${graphBox.y} ${graphBox.w} ${graphBox.h}`);$('graph-zoom-label').textContent=Math.round(graphZoom*100)+'%';}
 function graphScale(factor){const previous=graphZoom;graphZoom=Math.max(.6,Math.min(2.5,graphZoom*factor));const w=1200/graphZoom,h=730/graphZoom;graphBox={x:graphBox.x+(graphBox.w-w)/2,y:graphBox.y+(graphBox.h-h)/2,w,h};if(previous!==graphZoom)graphView();}
 function showFlowTab(view,updateHash=true){
- for(const name of ['overview','flow']){const active=name===view;$('view-'+name).hidden=!active;$('tab-'+name).setAttribute('aria-selected',String(active));$('tab-'+name).tabIndex=active?0:-1;}
- if(updateHash)history.replaceState(null,'',location.pathname+location.search+(view==='flow'?'#flow':''));
+ for(const name of ['overview','flow','records']){const active=name===view;$('view-'+name).hidden=!active;$('tab-'+name).setAttribute('aria-selected',String(active));$('tab-'+name).tabIndex=active?0:-1;}
+ if(updateHash)history.replaceState(null,'',location.pathname+location.search+(view==='overview'?'':'#'+view));
 }
 function flowTourStep(delta){tourIndex=(tourIndex+delta+flowTour.length)%flowTour.length;const id=flowTour[tourIndex];flowSelect('node',id);$('tour-progress').textContent=`${tourIndex+1} / ${flowTour.length}`;$('tour-caption').textContent=flowNode(id).description;}
 function initFlow(){
@@ -197,8 +197,8 @@ function initFlow(){
  flowEdges.map(e=>`<g class="graph-edge" data-edge="${e.id}" role="button" tabindex="0" aria-label="Inspect ${esc(flowNode(e.from).title)} to ${esc(flowNode(e.to).title)}"><path class="edge-hit" d="${e.path}"/><path class="edge-line" d="${e.path}"/>${e.label?`<rect class="edge-label-bg" x="${e.x-e.label.length*3.2-9}" y="${e.y-10}" width="${e.label.length*6.4+18}" height="20" rx="10"/><text x="${e.x}" y="${e.y+3}" text-anchor="middle">${e.label}</text>`:''}</g>`).join('')+
  flowNodes.map((n,i)=>`<g class="graph-node" data-node="${n.id}" transform="translate(${n.x},${n.y})" role="button" tabindex="0" aria-label="Inspect ${esc(n.title)}"><rect width="${n.w}" height="90" rx="10"/><text class="graph-node-number" x="${n.w-25}" y="20">${String(i+1).padStart(2,'0')}</text><text class="graph-node-title" x="15" y="30">${esc(n.title)}</text><text class="graph-node-subtitle" x="15" y="49">${esc(n.sub)}</text><circle class="node-indicator" cx="19" cy="70" r="3"/><text class="graph-node-state" x="29" y="73">WAITING</text></g>`).join('');
  for(const [attribute,kind] of [['node','node'],['edge','edge']])svg.querySelectorAll(`[data-${attribute}]`).forEach(g=>{g.addEventListener('click',()=>flowSelect(kind,g.dataset[attribute]));g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();flowSelect(kind,g.dataset[attribute]);}});});
- document.querySelectorAll('[data-view]').forEach(b=>{b.addEventListener('click',()=>showFlowTab(b.dataset.view));b.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const view=e.key==='Home'?'overview':e.key==='End'?'flow':b.dataset.view==='flow'?'overview':'flow';showFlowTab(view);$('tab-'+view).focus();}});});
- window.addEventListener('hashchange',()=>showFlowTab(location.hash==='#flow'?'flow':'overview',false));
+ document.querySelectorAll('[data-view]').forEach(b=>{b.addEventListener('click',()=>showFlowTab(b.dataset.view));b.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const views=['overview','flow','records'],index=views.indexOf(b.dataset.view);const view=e.key==='Home'?'overview':e.key==='End'?'records':views[(index+(e.key==='ArrowRight'?1:2))%views.length];showFlowTab(view);$('tab-'+view).focus();}});});
+ window.addEventListener('hashchange',()=>showFlowTab(['flow','records'].includes(location.hash.slice(1))?location.hash.slice(1):'overview',false));
  $('graph-zoom-in').addEventListener('click',()=>graphScale(1.2));$('graph-zoom-out').addEventListener('click',()=>graphScale(1/1.2));$('graph-fit').addEventListener('click',()=>{graphZoom=1;graphBox={x:0,y:0,w:1200,h:730};graphView();});
  const point=e=>{const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;return p.matrixTransform(svg.getScreenCTM().inverse());};
  svg.addEventListener('pointerdown',e=>{if(e.button!==0||e.target.closest('[data-node],[data-edge]'))return;graphDrag=point(e);svg.setPointerCapture(e.pointerId);svg.classList.add('dragging');});
@@ -206,6 +206,80 @@ function initFlow(){
  const release=()=>{graphDrag=null;svg.classList.remove('dragging');};svg.addEventListener('pointerup',release);svg.addEventListener('pointercancel',release);svg.addEventListener('lostpointercapture',release);
  $('tour-back').addEventListener('click',()=>flowTourStep(-1));$('tour-next').addEventListener('click',()=>flowTourStep(1));
  $('payload-copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('inspect-payload').textContent);$('payload-copy').textContent='Copied';}catch{$('payload-copy').textContent='Select text to copy';}});
- showFlowTab(location.hash==='#flow'?'flow':'overview',false);flowTourStep(0);
+ showFlowTab(['flow','records'].includes(location.hash.slice(1))?location.hash.slice(1):'overview',false);flowTourStep(0);
 }
 initFlow();
+
+// Saved records share the experiment-scoped snapshot and never issue writes.
+let recordScope='';
+const parameterLabels={det_conf:'Detection confidence',aim_gain:'Aim gain',aim_max_step:'Max aim step',aim_y_offset:'Aim height offset',fire_radius_px:'Fire radius (px)',burst_ms:'Burst duration (ms)',retreat_box_h:'Retreat box height',strafe_mode:'Strafe mode',strafe_period_s:'Strafe period (s)',reload_when_clear_at:'Reload threshold',scan_turn_px:'Scan turn (px)',target_rule:'Target rule'};
+const diagnosticLabels={overshoot_rate:'Aim overshoot',time_no_target_pct:'Time without a target',det_count_avg:'Average detections',loop_fps:'Average loop FPS',shots_fired:'Shots fired',hits_proxy:'Score increase events',close_calls:'Close calls',retreat_frames:'Retreat frames',stuck_events:'Stuck events',pointer_lock_losses:'Pointer lock losses',death_time_s:'Death time (s)',kills_est:'Estimated kills',headshot_kills_est:'Estimated headshot kills',body_kills_est:'Estimated body kills',melee_kills_est:'Estimated melee kills',non_lethal_hits_est:'Estimated non-lethal hits',shots_without_target:'Shots without a target',avg_frames_to_lock:'Frames to target lock'};
+function recordTime(value){const d=new Date(value);return value&&Number.isFinite(d.getTime())?d.toLocaleString():'Time not recorded';}
+function shortId(value){const text=String(value||'—');return text.length>25?text.slice(0,12)+'…'+text.slice(-7):text;}
+function recordValue(value){return value==null?'—':typeof value==='number'?String(value):typeof value==='object'?JSON.stringify(value):String(value);}
+function runId(run){return String(run._id||run.job_id||'');}
+function syncRecordSelect(id,rows,key,label,empty){
+ const select=$(id),previous=select.value;
+ const html=rows.map(r=>`<option value="${esc(key(r))}">${esc(label(r))}</option>`).join('')||`<option value="">${esc(empty)}</option>`;
+ if(select.innerHTML!==html){select.innerHTML=html;if(rows.some(r=>key(r)===previous))select.value=previous;}
+ if(!rows.some(r=>key(r)===select.value))select.value=rows.length?key(rows[0]):'';
+ return rows.find(r=>key(r)===select.value)||null;
+}
+function strategyLink(id,records,label){
+ if(!id)return '<span>Not recorded</span>';
+ const found=records.strategies?.some(s=>String(s._id)===String(id));
+ return found?`<button class="record-link" data-record-strategy="${esc(id)}" title="${esc(id)}">${esc(label||shortId(id))} ↗</button>`:`<span class="record-meta" title="${esc(id)}">${esc(label||shortId(id))} · outside recent strategy window</span>`;
+}
+function renderRecords(){
+ const data=snapshot||{},records=data.records||{},runs=records.runs||[],strategies=records.strategies||[],jobs=records.jobs||[],calls=records.calls||[];
+ const scope=(data.mode||'live')+':'+(data.experiment?.id||'');
+ if(scope!==recordScope){$('record-run').value='';$('record-strategy').value='';recordScope=scope;}
+ const demo=data.mode==='demo',ready=data.connected&&data.experiment;
+ $('records-source').textContent=(demo?'DEMO RECORDS':ready?'MONGODB · READ ONLY':'NO EXPERIMENT DATA')+(paused?' · PAUSED':'');
+ $('records-meta').textContent=ready?`${data.experiment.id} · ${data.experiment.map} · Generation ${data.experiment.generation}${data.experiment.started_at?' · Started '+recordTime(data.experiment.started_at):''}`:'Select a connected experiment to inspect its saved records.';
+ const latest=data.latest_run;
+ $('persisted-summary').textContent=latest?.job_id?`${fmt(latest.points)} points · ${fmt(latest.survival_s)}s survival · ${fmt(latest.fitness)} fitness · ${recordTime(latest.completed_at)}`:'No completed evaluation recorded for this experiment yet.';
+ const run=syncRecordSelect('record-run',runs,runId,r=>`G${r.generation??'—'} · ${fmt(r.fitness)} fitness · ${shortId(runId(r))}`,'No saved runs');
+ $('saved-run-empty').hidden=Boolean(run);$('saved-run-content').hidden=!run;
+ if(run){
+  $('saved-points').textContent=fmt(run.points);$('saved-survival').textContent=fmt(run.survival_s)+'s';$('saved-fitness').textContent=fmt(run.fitness);
+  $('saved-run-meta').textContent=`${run.worker||'Worker not recorded'} · ${recordTime(run.completed_at)} · ${runId(run)}`;
+  $('saved-run-strategy').innerHTML=strategyLink(run.strategy_id,records,'Inspect run strategy');
+  const diagnostics=run.diagnostics||{};
+  $('saved-diagnostics').innerHTML=['time_no_target_pct','det_count_avg','loop_fps','overshoot_rate','shots_fired','hits_proxy'].map(key=>{
+   const raw=diagnostics[key];let value=recordValue(raw);
+   if(raw!=null&&typeof raw==='number'){if(key==='overshoot_rate')value=fmt(raw*100)+'%';else if(key==='time_no_target_pct')value=fmt(raw)+'%';}
+   return `<div class="diagnostic"><small>${esc(diagnosticLabels[key])}</small><strong>${esc(value)}</strong></div>`;
+  }).join('');
+  $('saved-summary').textContent=diagnostics.last_5s_summary||'No final-seconds summary was saved for this run.';
+  $('saved-all-diagnostics').innerHTML=Object.entries(diagnostics).filter(([k])=>k!=='last_5s_summary').map(([key,value])=>`<div><dt title="${esc(key)}">${esc(diagnosticLabels[key]||key.replaceAll('_',' '))}</dt><dd>${esc(recordValue(value))}${key==='overshoot_rate'?' (fraction)':key==='time_no_target_pct'?'%':''}</dd></div>`).join('')||'<div><dt>No diagnostics saved</dt></div>';
+ }
+ const strategy=syncRecordSelect('record-strategy',strategies,s=>String(s._id),s=>`${s.persona||'Strategy'} · G${s.generation??'—'} · ${shortId(s._id)}`,'No saved strategies');
+ $('saved-strategy-empty').hidden=Boolean(strategy);$('saved-strategy-content').hidden=!strategy;
+ if(strategy){
+  $('saved-strategy-source').textContent=strategy.fallback?'FALLBACK · '+(strategy.fallback_source||'source not recorded').replaceAll('_',' ').toUpperCase():strategy.persona==='Baseline'?'HAND-WRITTEN BASELINE':strategy.model?'MODEL PROPOSAL':'SAVED STRATEGY';
+  $('saved-strategy-score').textContent=strategy.evaluations?`${fmt(strategy.mean_fitness)} mean fitness · ${fmt(strategy.evaluations)} evaluation${strategy.evaluations===1?'':'s'}`:'Not evaluated in the recent run sample';
+  $('saved-strategy-id').textContent=String(strategy._id);$('saved-rationale').textContent=strategy.rationale||'No rationale saved.';
+  $('saved-params').innerHTML=Object.entries(strategy.params||{}).map(([key,value])=>`<div class="strategy-param ${strategy.changed_params?.includes(key)?'changed':''}"><span title="${esc(key)}">${esc(parameterLabels[key]||key)}</span><strong>${esc(recordValue(value))}</strong></div>`).join('')||'<p class="record-meta">No settings saved.</p>';
+  $('saved-parents').innerHTML=strategy.parent_ids?.length?strategy.parent_ids.map(id=>strategyLink(id,records)).join(''):'<span>No parents recorded · baseline or root strategy</span>';
+ }
+ const statuses=data.jobs||{},unfinished=Object.entries(statuses).filter(([status])=>status!=='done').reduce((n,[,count])=>n+count,0),total=Object.values(statuses).reduce((n,count)=>n+count,0);
+ $('queue-readiness').textContent=!ready?'Queue data is unavailable.':!total?'No evaluation jobs recorded yet.':unfinished?`${unfinished} evaluation${unfinished===1?' remains':'s remain'} before the next generation can be proposed (${statuses.queued||0} queued, ${statuses.running||0} running).`:(data.counts?.runs||0)>0?'All recorded evaluations are complete. The orchestrator can propose the next generation.':'Jobs are complete; waiting for saved run results.';
+ const jobFilter=$('record-job-filter').value,visibleJobs=jobs.filter(j=>jobFilter==='all'||j.status===jobFilter);
+ $('saved-jobs').innerHTML=visibleJobs.map(job=>{
+  const savedRun=runs.find(r=>r.job_id===job.job_id),at=job.completed_at||job.claimed_at||job.created_at;
+  const jobLabel=savedRun?`<button class="record-link" data-record-run="${esc(runId(savedRun))}" title="${esc(job.job_id)}">${esc(shortId(job.job_id))} ↗</button>`:`<span title="${esc(job.job_id)}">${esc(shortId(job.job_id))}</span>`;
+  return `<tr><td><span class="record-state ${esc(job.status)}">${esc(job.status||'unknown')}</span></td><td>${jobLabel}<small>${esc((job.kind||'evaluation').replaceAll('_',' '))}</small></td><td>${esc(job.generation??'—')}</td><td>${strategyLink(job.strategy_id,records)}</td><td>${esc(job.worker||'Unclaimed')}</td><td title="${esc(recordTime(at))}">${esc(ageLabel(at))}</td></tr>`;
+ }).join('')||'<tr><td colspan="6" class="empty">No matching jobs in the recent records.</td></tr>';
+ $('saved-jobs-note').textContent=`Showing ${visibleJobs.length} matching jobs from the latest ${jobs.length} returned (maximum 50). Queue totals above cover the entire experiment. Select a completed job to inspect its saved run.`;
+ $('saved-calls-count').textContent=`${data.counts?.llm_calls??0} RECORDED`;
+ $('saved-calls').innerHTML=calls.map(call=>`<tr><td>${esc(call.persona||'Unknown')}<small>${esc(call.model||'Model not recorded')}</small></td><td>${esc(call.generation??'—')}</td><td><span class="record-state ${call.ok?'validated':'failed'}">${call.ok?'Validated':'Failed'}</span>${call.error_type?`<small>${esc(call.error_type)}</small>`:''}</td><td>${esc(call.attempt??'—')}</td><td>${call.latency_ms!=null?fmt(call.latency_ms/1000)+'s':'—'}</td><td>${fmt(call.tokens?.total_tokens)}</td><td title="${esc(recordTime(call.created_at))}">${esc(ageLabel(call.created_at))}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No Luminal calls saved for this experiment yet.</td></tr>';
+}
+$('record-run').addEventListener('change',renderRecords);$('record-strategy').addEventListener('change',renderRecords);$('record-job-filter').addEventListener('change',renderRecords);
+$('open-records').addEventListener('click',()=>{showFlowTab('records');$('tab-records').focus();});
+$('view-records').addEventListener('click',event=>{
+ const strategy=event.target.closest('[data-record-strategy]'),run=event.target.closest('[data-record-run]');
+ if(strategy){$('record-strategy').value=strategy.dataset.recordStrategy;renderRecords();$('record-strategy').focus({preventScroll:true});}
+ if(run){$('record-run').value=run.dataset.recordRun;renderRecords();$('record-run').focus();$('record-run').scrollIntoView?.({block:'center',behavior:'smooth'});}
+});
+renderRecords();

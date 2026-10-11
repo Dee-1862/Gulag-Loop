@@ -4,6 +4,22 @@ from datetime import datetime, timezone
 from statistics import mean
 
 PERSONAS = ('Bold', 'Tuner', 'Defender', 'Explorer')
+PARAM_FIELDS = ('det_conf', 'aim_gain', 'aim_max_step', 'aim_y_offset', 'fire_radius_px',
+                'burst_ms', 'retreat_box_h', 'strafe_mode', 'strafe_period_s',
+                'reload_when_clear_at', 'scan_turn_px', 'target_rule')
+RECORD_FIELDS = {
+    'runs': ('_id','job_id','strategy_id','generation','worker','map','points','survival_s','fitness','diagnostics','completed_at'),
+    'jobs': ('job_id','strategy_id','generation','kind','status','worker','created_at','claimed_at','completed_at'),
+    'strategies': ('_id','persona','generation','model','rationale','parent_ids','changed_params','fallback','fallback_source','is_best','created_at'),
+    'calls': ('persona','model','generation','strategy_id','ok','attempt','tokens','latency_ms','created_at','error_type','http_status'),
+}
+
+def record_rows(kind, documents, limit):
+    rows = [{k: doc[k] for k in RECORD_FIELDS[kind] if k in doc} for doc in documents[:limit]]
+    if kind == 'strategies':
+        for row, doc in zip(rows, documents):
+            row['params'] = {k: doc['params'][k] for k in PARAM_FIELDS if k in (doc.get('params') or {})}
+    return rows
 
 def iso(value):
     if isinstance(value, datetime):
@@ -98,8 +114,13 @@ def assemble(experiment, jobs, runs, calls, playbooks, signals, counts, now=None
             title=f"Job {j.get('status', 'queued')}", detail=f"{j.get('kind', 'evaluation')} · {j.get('worker') or 'awaiting worker'}", collection='jobs', id=str(j.get('_id',j.get('job_id')))))
     events.sort(key=lambda e: e['at'] or '', reverse=True)
     latest = runs[0] if runs else {}
+    records = dict(runs=record_rows('runs', runs, 25), jobs=record_rows('jobs', jobs, 50),
+                   strategies=record_rows('strategies', playbooks, 50), calls=record_rows('calls', calls, 20))
+    for strategy in records['strategies']:
+        scores = groups.get(strategy['_id'], [])
+        strategy.update(evaluations=len(scores), mean_fitness=round(mean(scores), 1) if scores else None)
     return clean(dict(mode='live', connected=True, experiment=dict(id=str(experiment['_id']), map=experiment.get('map', '—'),
-        generation=experiment.get('generation', 0)), updated_at=now.isoformat(), jobs=dict(statuses), counts=counts,
+        generation=experiment.get('generation', 0), started_at=iso(experiment.get('started_at'))), updated_at=now.isoformat(), jobs=dict(statuses), counts=counts, records=records,
         workers=workers, agents=agents, chart=chart, leaderboard=leaderboard[:6], events=events[:25],
         latest_run=latest, runs_sampled=len(runs), success_count=sum(bool(c.get('ok')) for c in calls),
         call_count_sampled=len(calls), model=next((c.get('model') for c in calls if c.get('model')), None)))
@@ -117,15 +138,17 @@ class MongoSource:
     def snapshot(self, experiment_id):
         from pymongo import timeout
         with timeout(6):
-            exp = self.db.experiments.find_one({'_id': experiment_id}, {'map': 1, 'generation': 1})
+            exp = self.db.experiments.find_one({'_id': experiment_id}, {'map': 1, 'generation': 1, 'started_at': 1})
             if not exp:
                 raise LookupError('Experiment not found')
             q = {'experiment_id': experiment_id}
             # Explicit projections prevent unrelated fields/credentials from reaching the browser.
             jobs = list(self.db.jobs.find(q, {k:1 for k in ('job_id','strategy_id','generation','kind','status','worker','created_at','claimed_at','completed_at')}).sort('created_at', -1).limit(500))
-            runs = list(self.db.runs.find(q, {k:1 for k in ('job_id','strategy_id','generation','worker','points','survival_s','fitness','diagnostics','completed_at')}).sort('completed_at', -1).limit(500))
-            calls = list(self.db.llm_calls.find(q, {k:1 for k in ('persona','model','generation','strategy_id','ok','attempt','tokens','latency_ms','created_at')}).sort('created_at', -1).limit(200))
-            playbooks = list(self.db.playbooks.find(q, {k:1 for k in ('persona','generation','rationale','changed_params','fallback','fallback_source','created_at')}).sort('generation', -1).limit(500))
+            runs = list(self.db.runs.find(q, {k:1 for k in RECORD_FIELDS['runs']}).sort('completed_at', -1).limit(500))
+            calls = list(self.db.llm_calls.find(q, {k:1 for k in RECORD_FIELDS['calls']}).sort('created_at', -1).limit(200))
+            playbook_projection = {k:1 for k in RECORD_FIELDS['strategies']}
+            playbook_projection.update({f'params.{k}':1 for k in PARAM_FIELDS})
+            playbooks = list(self.db.playbooks.find(q, playbook_projection).sort([('generation', -1), ('created_at', -1)]).limit(500))
             signals = list(self.db.dashboard_status.find(q, {k:1 for k in ('component','identity','worker','state','persona','generation','attempt','updated_at','fps','detections','action','points','elapsed_s','job_id')}).sort('updated_at', -1).limit(50))
             counts = {c: self.db[c].count_documents(q) for c in ('jobs','runs','playbooks','llm_calls')}
             result = assemble(exp, jobs, runs, calls, playbooks, signals, counts)
