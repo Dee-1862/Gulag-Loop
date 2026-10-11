@@ -74,7 +74,7 @@ class Runner:
 
     def __init__(self, map_id="kino", config="config.yaml", out_dir=None,
                  save_frames=None, frame_every=1.0, max_s=180.0, worker=None,
-                 weights=None, db=None, experiment_id=None):
+                 weights=None, db=None, experiment_id=None, live_view=False):
         import yaml
         from vision.capture import Capture
         from vision.pipeline import VisionPipeline
@@ -82,6 +82,12 @@ class Runner:
         out_dir = out_dir or data_path("episodes", "")
         save_frames = data_path("port_frames", "") if save_frames is None else save_frames
         self.db, self.experiment_id = db, experiment_id  # entry points are learned per map in MongoDB
+        self.live_view = live_view
+        if live_view:  # create the window BEFORE the game opens, so the game ends up with focus
+            cv2.namedWindow("ZOMBIE VISION (live)", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("ZOMBIE VISION (live)", 960, 540)
+            cv2.imshow("ZOMBIE VISION (live)", np.zeros((540, 960, 3), np.uint8))
+            cv2.waitKey(1)
         # Load the detector and OCR BEFORE starting the game: they take ~1 min, and an idle player
         # in round 1 gets killed before the first episode begins.
         weights = resolve_weights(weights or yaml.safe_load(open(config))["vision"]["weights"])
@@ -119,7 +125,8 @@ class Runner:
                           record_path=os.path.join(self.out_dir, f"{job['job_id']}.mp4"),
                           save_frames_dir=os.path.join(self.save_frames, self.map_id) if self.save_frames else None,
                           log=log, cap=self.cap, frame_every_s=self.frame_every,
-                          map_name=self.map_id, db=self.db, experiment_id=self.experiment_id, job_id=job["job_id"])
+                          map_name=self.map_id, db=self.db, experiment_id=self.experiment_id, job_id=job["job_id"],
+                          live_view=self.live_view)
         log(f"  -> points +{res['points']} survival {res['survival_s']}s game_over={res['game_over']} "
             f"diag={json.dumps(res['diagnostics'])[:300]}")
         if res["aborted"]:
@@ -151,6 +158,8 @@ def main():
     ap.add_argument("--worker", default=socket.gethostname())
     ap.add_argument("--frame-every", type=float, default=1.0, help="seconds between saved raw frames")
     ap.add_argument("--weights", default=None, help="detector weights; default: config.yaml, else model/zombies_v1.*")
+    ap.add_argument("--live-view", action="store_true",
+                    help="show the HUD (red overlays + 360 radar) live in a window; put it beside the game")
     ap.add_argument("--experiment", default=None, help="claim jobs from this MongoDB experiment instead of --jobs")
     ap.add_argument("--propose", action="store_true",
                     help="with --experiment: when the queue is empty, ask Luminal for the next generation")
@@ -189,7 +198,7 @@ def main():
         db = None
         log(f"MongoDB not available for entry points ({type(e).__name__})")
     runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
-                    weights=args.weights, db=db)
+                    weights=args.weights, db=db, live_view=args.live_view)
     try:
         for i, job in enumerate(jobs):
             if job["job_id"] in done:
@@ -242,7 +251,7 @@ def run_mongo(args):
             time.sleep(args.wait_s)  # other workers are still running, or another machine proposes
 
     runner = Runner(args.map, args.config, args.out_dir, args.save_frames, args.frame_every, args.max_s, args.worker,
-                    weights=args.weights, db=orch.db, experiment_id=args.experiment)
+                    weights=args.weights, db=orch.db, experiment_id=args.experiment, live_view=args.live_view)
     try:
         for i, job in enumerate(job_stream()):
             log(f"job {i + 1} {job['kind']} {job['strategy_id'][:8]} (MongoDB {args.experiment})")

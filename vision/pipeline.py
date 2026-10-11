@@ -105,12 +105,12 @@ class VisionPipeline:
         self.last = obs
         return obs
 
-    def hud_frame(self, info=None, fire_radius_px=None, retreat_prox=0.45, show_masks=False):
+    def hud_frame(self, info=None, fire_radius_px=None, retreat_prox=0.45, show_masks=False, radar=None):
         o = self.last
         return self.hud.render(o.frame, o.tracks, o.target, o.lock_frames,
                                stats={"fps": self.fps, "infer_ms": o.infer_ms, "device": self.device_name},
                                info=info, aim_y_offset=self._aim_y_offset, fire_radius_px=fire_radius_px,
-                               retreat_prox=retreat_prox, masks=self.masks if show_masks else ())
+                               retreat_prox=retreat_prox, masks=self.masks if show_masks else (), radar=radar)
 
     def close(self):
         if self.cap:

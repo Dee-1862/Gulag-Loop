@@ -15,7 +15,7 @@ from collections import Counter, deque
 import cv2
 import numpy as np
 
-from bot.awareness import DamageSensor, EntryPoints, Heading, RecoilTracker, ZombieMemory, draw_compass
+from bot.awareness import DamageSensor, EntryPoints, Heading, RecoilTracker, ZombieMemory, wrap180
 from bot.scoring import classify_delta, in_head_zone, summarize as summarize_shots
 
 BASELINE = dict(det_conf=0.35, aim_gain=0.8, aim_max_step=80, aim_y_offset=0.15, fire_radius_px=25,
@@ -102,7 +102,7 @@ class Keys:
 
 def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_path=None,
                 save_frames_dir=None, log=print, abort_key="f8", cap=None, frame_every_s=1.0,
-                map_name="kino", db=None, experiment_id=None, job_id=None):
+                map_name="kino", db=None, experiment_id=None, job_id=None, live_view=False):
     """Play one episode. game: bot.game.PortGame (playing, pointer locked). vp: VisionPipeline (live=False).
     hud: bot.hudread.HudReader. Returns dict(points, survival_s, diagnostics, ...)."""
     import keyboard
@@ -345,12 +345,23 @@ def run_episode(game, vp, hud, params, max_s=180.0, counts_per_px=0.15, record_p
             while last5 and now - last5[0][0] > 5:
                 last5.popleft()
 
-            if rec and n % 2 == 0:
-                img = vp.hud_frame(info={"action": action, "points": points if points is not None else "-",
+            if (rec or live_view) and n % 2 == 0:
+                radar = {"active": active,
+                         "zombies": [{"rel_deg": wrap180(v["bearing"] - heading.yaw), "h_frac": v["h"],
+                                      "visible": tid in visible_ids, "target": tgt is not None and tid == tgt.id}
+                                     for tid, v in memory.items.items()],
+                         "entries": [wrap180(b - heading.yaw) for b, _ in entries.points]}
+                img = vp.hud_frame(info={"action": "HIT - TURNING" if damage.recently_hit(now, 0.6) else action,
+                                         "points": points if points is not None else "-",
                                          "strategy": f"gain {S['aim_gain']:.2f} fire<{S['fire_radius_px']}px "
                                                      f"{S['target_rule']}"},
-                                   fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H)
-                rec.write(draw_compass(img, heading, memory, entries, active, damage.recently_hit(now, 0.6), now))
+                                   fire_radius_px=S["fire_radius_px"], retreat_prox=S["retreat_box_h"] / H,
+                                   radar=radar)
+                if rec:
+                    rec.write(img)
+                if live_view:
+                    cv2.imshow("ZOMBIE VISION (live)", img)
+                    cv2.waitKey(1)
             if save_frames_dir and now - t_frame_save > frame_every_s:
                 cv2.imwrite(os.path.join(save_frames_dir, f"{int(now * 1000)}.jpg"), frame,
                             [cv2.IMWRITE_JPEG_QUALITY, 92])

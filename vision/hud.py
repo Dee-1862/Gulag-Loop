@@ -210,8 +210,42 @@ class HUD:
         self.text.put(img, tag, (max(0, int(b.x1) - int(84 * S)), int(b.y1 + (0 if on_head else 0.35) * b.h)),
                       int(13 * S), HEAD_RED if on_head else WHITE, mono=True)
 
+    def radar360(self, img, radar, S, W, H):
+        """Full-circle radar, facing up. radar = dict(zombies=[{rel_deg, h_frac, visible, target}],
+        entries=[rel_deg], active=int). Red dots: zombies (solid = on screen, ring = remembered)."""
+        R = int(80 * S)
+        rcx, rcy = W - int(24 * S) - R, int(30 * S) + R
+        disc = img.copy()
+        cv2.circle(disc, (rcx, rcy), R, (18, 18, 18), -1, cv2.LINE_AA)
+        half = HFOV_DEG / 2  # lit wedge = what the camera sees
+        cv2.ellipse(disc, (rcx, rcy), (R, R), 0, -90 - half, -90 + half, (70, 62, 40), -1, cv2.LINE_AA)
+        cv2.addWeighted(disc, 0.6, img, 0.4, 0, img)
+        for rr in (R // 3, 2 * R // 3, R):
+            cv2.circle(img, (rcx, rcy), rr, (110, 100, 70), 1, cv2.LINE_AA)
+        sweep = math.radians((self.t * 6) % 360 - 90)
+        cv2.line(img, (rcx, rcy), (int(rcx + R * math.cos(sweep)), int(rcy + R * math.sin(sweep))), ACCENT, 1,
+                 cv2.LINE_AA)
+        for rel in radar.get("entries", []):  # learned entry points: amber ticks on the rim
+            a = math.radians(-90 + rel)
+            p0 = (int(rcx + (R - 7 * S) * math.cos(a)), int(rcy + (R - 7 * S) * math.sin(a)))
+            p1 = (int(rcx + (R + 3 * S) * math.cos(a)), int(rcy + (R + 3 * S) * math.sin(a)))
+            cv2.line(img, p0, p1, WARN, max(2, int(2 * S)), cv2.LINE_AA)
+        for z in radar.get("zombies", []):
+            rng = min(1.0, est_distance_m(z["h_frac"] * H, H) / 15.0) * R
+            a = math.radians(-90 + z["rel_deg"])
+            p = (int(rcx + rng * math.cos(a)), int(rcy + rng * math.sin(a)))
+            if z.get("visible"):
+                cv2.circle(img, p, int(5 * S), ZOMBIE_RED, -1, cv2.LINE_AA)
+            else:
+                cv2.circle(img, p, int(5 * S), ZOMBIE_RED, max(1, int(2 * S)), cv2.LINE_AA)
+            if z.get("target"):
+                cv2.circle(img, p, int(9 * S), HEAD_RED, 1, cv2.LINE_AA)
+        cv2.circle(img, (rcx, rcy), int(3 * S), WHITE, -1, cv2.LINE_AA)
+        self.text.put(img, f"RADAR 360  ZOMBIES {radar.get('active', 0)}", (rcx, rcy + R + int(6 * S)),
+                      int(12 * S), WHITE, mono=True, anchor="mt")
+
     def render(self, frame, tracks, target=None, lock_frames=0, stats=None, info=None,
-               aim_y_offset=0.2, fire_radius_px=None, retreat_prox=0.45, masks=()):
+               aim_y_offset=0.2, fire_radius_px=None, retreat_prox=0.45, masks=(), radar=None):
         """tracks: list of tracker.Track (or anything with .id, .box, .vx, .vy, .trail).
         stats: dict(fps, infer_ms, device, model). info: dict(action, generation, persona, strategy, points)."""
         self.t += 1
@@ -333,29 +367,32 @@ class HUD:
             self.text.put(img, action, (cx, ty + int(44 * S)), int(18 * S), acol, anchor="mt")
 
         # --- top-right radar ---
-        R = int(80 * S)
-        rcx, rcy = W - int(24 * S) - R, int(30 * S) + R
-        half = HFOV_DEG / 2
-        for rr in (R // 3, 2 * R // 3, R):
-            cv2.ellipse(img, (rcx, rcy), (rr, rr), 0, -90 - half, -90 + half, (110, 100, 70), 1, cv2.LINE_AA)
-        for a in (-half, half):
-            ang = math.radians(-90 + a)
-            cv2.line(img, (rcx, rcy), (int(rcx + R * math.cos(ang)), int(rcy + R * math.sin(ang))), (110, 100, 70), 1, cv2.LINE_AA)
-        sweep = -half + (self.t * 3) % int(2 * half)
-        ang = math.radians(-90 + sweep)
-        cv2.line(img, (rcx, rcy), (int(rcx + R * math.cos(ang)), int(rcy + R * math.sin(ang))), ACCENT, 1, cv2.LINE_AA)
-        for tr in tracks:
-            b = tr.box
-            bearing = (b.cx / W - 0.5) * HFOV_DEG
-            rng = min(1.0, est_distance_m(b.h, H) / 15.0) * R
-            ang = math.radians(-90 + bearing)
-            p = (int(rcx + rng * math.cos(ang)), int(rcy + rng * math.sin(ang)))
-            col = threat_color(b.h / H)
-            cv2.circle(img, p, int(4 * S), col, -1, cv2.LINE_AA)
-            if target is not None and tr.id == target.id:
-                cv2.circle(img, p, int(8 * S), DANGER, 1, cv2.LINE_AA)
-        cv2.circle(img, (rcx, rcy), int(3 * S), WHITE, -1, cv2.LINE_AA)
-        self.text.put(img, "RADAR  15m", (rcx, rcy + int(8 * S)), int(12 * S), DIM, mono=True, anchor="mt")
+        if radar is not None:  # full-circle radar from the bot's zombie memory
+            self.radar360(img, radar, S, W, H)
+        else:  # forward cone from the zombies on screen
+            R = int(80 * S)
+            rcx, rcy = W - int(24 * S) - R, int(30 * S) + R
+            half = HFOV_DEG / 2
+            for rr in (R // 3, 2 * R // 3, R):
+                cv2.ellipse(img, (rcx, rcy), (rr, rr), 0, -90 - half, -90 + half, (110, 100, 70), 1, cv2.LINE_AA)
+            for a in (-half, half):
+                ang = math.radians(-90 + a)
+                cv2.line(img, (rcx, rcy), (int(rcx + R * math.cos(ang)), int(rcy + R * math.sin(ang))), (110, 100, 70), 1, cv2.LINE_AA)
+            sweep = -half + (self.t * 3) % int(2 * half)
+            ang = math.radians(-90 + sweep)
+            cv2.line(img, (rcx, rcy), (int(rcx + R * math.cos(ang)), int(rcy + R * math.sin(ang))), ACCENT, 1, cv2.LINE_AA)
+            for tr in tracks:
+                b = tr.box
+                bearing = (b.cx / W - 0.5) * HFOV_DEG
+                rng = min(1.0, est_distance_m(b.h, H) / 15.0) * R
+                ang = math.radians(-90 + bearing)
+                p = (int(rcx + rng * math.cos(ang)), int(rcy + rng * math.sin(ang)))
+                col = threat_color(b.h / H)
+                cv2.circle(img, p, int(4 * S), col, -1, cv2.LINE_AA)
+                if target is not None and tr.id == target.id:
+                    cv2.circle(img, p, int(8 * S), DANGER, 1, cv2.LINE_AA)
+            cv2.circle(img, (rcx, rcy), int(3 * S), WHITE, -1, cv2.LINE_AA)
+            self.text.put(img, "RADAR  15m", (rcx, rcy + int(8 * S)), int(12 * S), DIM, mono=True, anchor="mt")
 
         # --- bottom-left: agent / strategy strip ---
         lines = []
