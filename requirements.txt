@@ -8,3 +8,4 @@ numpy
 pyyaml
 keyboard
 pydirectinput-rgx
+playwright
